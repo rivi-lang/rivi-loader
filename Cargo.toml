@@ -1,0 +1,18 @@
+[package]
+name = "rivi-loader"
+version = "0.1.0"
+authors = ["Juuso Haavisto <juuso@mail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ash = "0.32.1"
+vk-mem = { git = "https://github.com/matthewjberger/vk-mem-rs", version = "0.2.3" }
+rayon = "1.5.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.23.0"
+
+[dev-dependencies]
+csv = "1.1"
