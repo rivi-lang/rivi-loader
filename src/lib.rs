@@ -60,7 +60,7 @@ unsafe fn create_instance(debug_flag: bool) -> Result<App, Box<dyn Error>> {
         layer_names.push(CString::new("VK_LAYER_KHRONOS_validation")?);
         //layer_names.push(CString::new("VK_LAYER_LUNARG_api_dump")?);
     };
-    let layers_names_raw: Vec<*const i8> = layer_names
+    let layers_names_raw: Vec<_> = layer_names
         .iter()
         .map(|raw_name| raw_name.as_ptr())
         .collect();
@@ -209,7 +209,7 @@ impl App {
                     ext_names.push(CString::new("VK_KHR_portability_subset").unwrap());
                 }
 
-                let ext_names_raw: Vec<*const i8> = ext_names
+                let ext_names_raw: Vec<_> = ext_names
                     .iter().map(|raw_name| raw_name.as_ptr()).collect();
                 let device_info = vk::DeviceCreateInfo::builder()
                     .queue_create_infos(&queue_infos)
