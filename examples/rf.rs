@@ -77,7 +77,7 @@ fn run(input: Vec<Vec<Vec<f32>>>) {
         println!("Found {} thread(s)", logical_devices.iter().map(|f| f.fences.len()).sum::<usize>());
         println!("App new {}ms", init_timer.elapsed().as_millis());
 
-        let mut spirv = std::io::Cursor::new(&include_bytes!("./shader/out.spv")[..]);
+        let mut spirv = std::io::Cursor::new(&include_bytes!("./shader/apply.spv")[..]);
         let shader = ash::util::read_spv(&mut spirv).expect("Failed to read vertex shader spv file");
         println!("App load {}ms", init_timer.elapsed().as_millis());
 

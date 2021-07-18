@@ -25,7 +25,7 @@ fn param_to_vec(param: &String) -> Vec<f32> {
 
 fn spirv_load(op: Operator) -> Vec<u32> {
     let mut spirv = match op {
-        Operator::Sum => std::io::Cursor::new(&include_bytes!("./shader/foo.spv")[..]),
+        Operator::Sum => std::io::Cursor::new(&include_bytes!("./shader/sum.spv")[..]),
     };
     ash::util::read_spv(&mut spirv).expect("Failed to read vertex shader spv file")
 }
