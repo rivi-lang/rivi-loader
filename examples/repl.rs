@@ -3,7 +3,6 @@ extern crate metal;
 
 use std::time::Instant;
 use std::fmt;
-use std::env;
 
 enum Operator {
   Sum
@@ -19,10 +18,6 @@ impl fmt::Display for Operator {
   }
 }
 
-fn param_to_vec(param: &String) -> Vec<f32> {
-  param.trim_end_matches(',').split(",").map(|c| c.parse().expect("Invalid parameter")).collect()
-}
-
 fn spirv_load(op: Operator) -> Vec<u32> {
     let mut spirv = match op {
         Operator::Sum => std::io::Cursor::new(&include_bytes!("./shader/sum.spv")[..]),
@@ -31,19 +26,9 @@ fn spirv_load(op: Operator) -> Vec<u32> {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 4 {
-      eprintln!("Missing arguments");
-      return;
-    }
-
     let param_a = [1.0, 2.0].to_vec();
     let param_b = [3.0, 4.0].to_vec();
-    let operator: Operator = match args[2].as_str() {
-      "+" => Operator::Sum,
-      _ => return eprintln!("Invalid operator")
-    };
-    let shader = spirv_load(operator);
+    let shader = spirv_load(Operator::Sum);
 
     let init_timer = Instant::now();
     let (app, logical_devices) = rivi_loader::new(true).unwrap();
