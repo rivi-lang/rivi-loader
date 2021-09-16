@@ -38,7 +38,7 @@ fn main() {
       let shader = spirv_load(Operator::Sum).expect("could not load spirv");
 
       let init_timer = Instant::now();
-      let (app, logical_devices) = rivi_loader::new(true).unwrap();
+      let (_app, logical_devices) = rivi_loader::new(true).unwrap();
       println!("Found {} logical device(s)", logical_devices.len());
       println!("Found {} thread(s)", logical_devices.iter().map(|f| f.fences.len()).sum::<usize>());
       println!("App new {}ms", init_timer.elapsed().as_millis());

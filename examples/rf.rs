@@ -74,7 +74,7 @@ fn run(input: Vec<Vec<Vec<f32>>>) {
 
     unsafe {
 
-        let (app, logical_devices) = rivi_loader::new(true).unwrap();
+        let (_app, logical_devices) = rivi_loader::new(true).unwrap();
         println!("Found {} logical device(s)", logical_devices.len());
         println!("Found {} thread(s)", logical_devices.iter().map(|f| f.fences.len()).sum::<usize>());
         println!("App new {}ms", init_timer.elapsed().as_millis());

@@ -6,7 +6,7 @@ use gpu_allocator::*;
 
 use spirv::SPIRV;
 
-use std::sync::{Mutex};
+use std::sync::Mutex;
 use std::{convert::TryInto, error::Error, slice};
 use std::default::Default;
 use std::ffi::CString;
@@ -30,7 +30,7 @@ pub struct LogicalDevice {
     pub fences: Vec<Fence>,
 }
 
-pub struct Shader {
+struct Shader {
     pub shader_module: vk::ShaderModule,
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
@@ -38,7 +38,7 @@ pub struct Shader {
 }
 
 impl Shader {
-    pub unsafe fn drop(self, device: &ash::Device) {
+    unsafe fn drop(self, device: &ash::Device) {
         device.destroy_pipeline_layout(self.pipeline_layout, None);
         device.destroy_shader_module(self.shader_module, None);
         for set_layout in self.set_layouts {
@@ -180,7 +180,7 @@ impl App {
         }
     }
 
-    pub unsafe fn logical_devices(&self, gpus: Vec<GPU>) -> Result<Vec<LogicalDevice>, Box<dyn Error>> {
+    unsafe fn logical_devices(&self, gpus: Vec<GPU>) -> Result<Vec<LogicalDevice>, Box<dyn Error>> {
         let load_timer = Instant::now();
         let ldevices = gpus
             .iter()
@@ -331,7 +331,7 @@ impl Buffer {
 
 }
 
-pub struct Command {
+struct Command {
     descriptor_pool: vk::DescriptorPool,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -354,7 +354,7 @@ impl Command {
         unsafe { Ok(device.create_descriptor_pool(&descriptor_pool_info, None)?) }
     }
 
-    pub fn command_pool(
+    fn command_pool(
         device: &ash::Device,
         queue_family_index: u32,
     ) -> Result<vk::CommandPool, Box<dyn Error>> {
@@ -363,7 +363,7 @@ impl Command {
         unsafe { Ok(device.create_command_pool(&command_pool_info, None)?) }
     }
 
-    pub fn allocate_command_buffers(
+    fn allocate_command_buffers(
         device: &ash::Device,
         command_pool: vk::CommandPool,
         command_buffer_count: u32,
@@ -411,7 +411,7 @@ impl Command {
     }
 }
 
-pub fn load(device: &ash::Device, spirv: &SPIRV) -> Result<Shader, Box<dyn Error>>  {
+fn load(device: &ash::Device, spirv: &SPIRV) -> Result<Shader, Box<dyn Error>>  {
     unsafe {
         let set_layout = device.create_descriptor_set_layout(
             &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&spirv.dslbs),
@@ -459,13 +459,13 @@ pub fn load(device: &ash::Device, spirv: &SPIRV) -> Result<Shader, Box<dyn Error
     }
 }
 
-pub struct GPU {
+struct GPU {
     pub physical: vk::PhysicalDevice,
     pub queue_families: Vec<QueueFamily>,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct QueueFamily {
+struct QueueFamily {
     pub queue_count: u32,
     pub physical_index: usize,
 }
@@ -477,7 +477,7 @@ pub struct Fence {
 }
 
 impl Fence {
-    pub unsafe fn submit(&self, device: &ash::Device, command_buffers: &[vk::CommandBuffer]) {
+    unsafe fn submit(&self, device: &ash::Device, command_buffers: &[vk::CommandBuffer]) {
         device.queue_submit(self.present_queue, &[vk::SubmitInfo::builder()
             .command_buffers(command_buffers).build()
         ], self.fence).expect("queue submit failed.");
@@ -501,7 +501,7 @@ impl Drop for LogicalDevice {
 
 impl LogicalDevice {
 
-    unsafe fn create_cpu_inputs(&self, queue: &[u32], inputs: &Vec<Vec<f32>>) -> Vec<Buffer> {
+    fn create_cpu_inputs(&self, queue: &[u32], inputs: &Vec<Vec<f32>>) -> Vec<Buffer> {
         inputs
             .iter()
             .map(|input| {
@@ -693,7 +693,7 @@ mod tests {
         let init_timer = Instant::now();
         let res = new(false);
         assert!(res.is_ok());
-        let (app, devices) = res.unwrap();
+        let (_app, devices) = res.unwrap();
         println!("Found {} logical device(s)", devices.len());
         println!("Found {} thread(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
         println!("App new {}ms", init_timer.elapsed().as_millis());
