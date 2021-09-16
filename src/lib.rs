@@ -1,8 +1,12 @@
+use ash::vk::MemoryMapFlags;
 use ash::{vk, Entry, extensions::ext::DebugUtils};
 use ash::version::{DeviceV1_0, EntryV1_0, InstanceV1_0, InstanceV1_1};
 use rayon::prelude::*;
+use gpu_allocator::*;
+
 use spirv::SPIRV;
 
+use std::sync::{Mutex};
 use std::{convert::TryInto, error::Error, slice};
 use std::default::Default;
 use std::ffi::CString;
@@ -22,7 +26,7 @@ pub struct App {
 
 pub struct LogicalDevice {
     pub device: ash::Device,
-    pub allocator: vk_mem::Allocator,
+    pub allocator: Mutex<gpu_allocator::VulkanAllocator>,
     pub fences: Vec<Fence>,
 }
 
@@ -223,18 +227,15 @@ impl App {
 
                 println!("App load device created {}ms", load_timer.elapsed().as_millis());
 
-                let allocator_create_info = vk_mem::AllocatorCreateInfo {
+                let allocator_create_info = VulkanAllocatorCreateDesc {
                     physical_device: gpu.physical,
                     device: device.clone(),
                     instance: self.instance.clone(),
-                    preferred_large_heap_block_size: 1 * 1024 * 1024 * 1024,
-                    flags: vk_mem::AllocatorCreateFlags::KHR_DEDICATED_ALLOCATION,
-                    ..Default::default()
+                    debug_settings: Default::default(),
+                    buffer_device_address: false,
                 };
-                let allocator = vk_mem::Allocator::new(&allocator_create_info).unwrap();
 
-                let phy_properties = allocator.get_physical_device_properties().unwrap();
-                println!("{:?} {}", phy_properties.device_type, String::from_utf8(phy_properties.device_name.iter().map(|&c| c as u8).filter(|&c| c > 0).collect()).unwrap());
+                let allocator = VulkanAllocator::new(&allocator_create_info);
 
                 println!("App load allocator created {}ms", load_timer.elapsed().as_millis());
 
@@ -252,7 +253,7 @@ impl App {
                     })
                     .collect::<Vec<Fence>>();
 
-                LogicalDevice{device, allocator, fences}
+                LogicalDevice{ device, allocator: Mutex::new(allocator), fences }
 
             })
             .collect::<Vec<LogicalDevice>>();
@@ -279,50 +280,55 @@ impl Drop for App {
 #[derive(Debug)]
 struct Buffer {
     buffer: vk::Buffer,
-    allocation: vk_mem::Allocation,
-    allocation_info: vk_mem::AllocationInfo,
+    allocation: gpu_allocator::SubAllocation,
     device_size: vk::DeviceSize,
+    flags: MemoryMapFlags,
 }
 
 impl Buffer {
     fn new(
-        allocator: &vk_mem::Allocator,
-        size_in_bytes: u64,
+        device: &ash::Device,
+        allocator_arc: &Mutex<gpu_allocator::VulkanAllocator>,
+        device_size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
-        memory_usage: vk_mem::MemoryUsage,
-        sharing_mode: vk::SharingMode,
+        memory_usage: MemoryLocation,
         queue_family_indices: &[u32],
-    ) -> Result<Buffer, vk_mem::error::Error> {
-        let allocation_create_info = vk_mem::AllocationCreateInfo {
-            usage: memory_usage,
-            ..Default::default()
+    ) -> Result<Buffer, Box<dyn Error>> {
+        let sharing_mode = match queue_family_indices.len() {
+            1 => vk::SharingMode::EXCLUSIVE,
+            _ => vk::SharingMode::CONCURRENT,
         };
-        let (buffer, allocation, allocation_info) = allocator.create_buffer(
-            &ash::vk::BufferCreateInfo::builder()
-                .size(size_in_bytes)
-                .usage(usage)
-                .sharing_mode(sharing_mode)
-                .queue_family_indices(queue_family_indices)
-                .build(),
-            &allocation_create_info,
-        )?;
+        let create_info = vk::BufferCreateInfo::builder()
+            .size(device_size)
+            .usage(usage)
+            .sharing_mode(sharing_mode)
+            .queue_family_indices(queue_family_indices);
+        let buffer = unsafe { device.create_buffer(&create_info, None) }?;
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let mut allocator = allocator_arc.lock().unwrap();
+        let allocation = allocator.allocate(&AllocationCreateDesc {
+            name: "Allocation",
+            requirements,
+            location: memory_usage,
+            linear: true,
+        })?;
+        unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())?; }
         Ok(Buffer {
             buffer,
             allocation,
-            allocation_info,
-            device_size: size_in_bytes,
+            device_size,
+            flags: MemoryMapFlags::empty(),
         })
     }
     fn fill<T: Sized>(
         &self,
-        allocator: &vk_mem::Allocator,
         data: &[T],
-    ) -> Result<(), vk_mem::error::Error> {
-        let data_ptr = allocator.map_memory(&self.allocation)? as *mut T;
+    ) -> Result<(), Box<dyn Error>> {
+        let data_ptr = self.allocation.mapped_ptr().unwrap().as_ptr() as *mut T;
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
-        allocator.unmap_memory(&self.allocation);
         Ok(())
     }
+
 }
 
 pub struct Command {
@@ -488,7 +494,6 @@ impl Drop for LogicalDevice {
             for fence in &self.fences {
                 self.device.destroy_fence(fence.fence, None);
             }
-            self.allocator.destroy();
             self.device.destroy_device(None);
         }
     }
@@ -500,19 +505,19 @@ impl LogicalDevice {
         inputs
             .iter()
             .map(|input| {
-
-                let cpu_buffer = Buffer::new(
+                let buffer = Buffer::new(
+                    &self.device,
                     &self.allocator,
                     (input.len() * STRIDE) as u64,
                     vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-                    vk_mem::MemoryUsage::CpuToGpu,
-                    vk::SharingMode::CONCURRENT,
+                    MemoryLocation::CpuToGpu,
                     queue,
                 ).unwrap();
 
-                cpu_buffer.fill(&self.allocator, input).unwrap();
+                buffer.fill(input).unwrap();
 
-                cpu_buffer
+                buffer
+
             })
             .collect()
     }
@@ -528,13 +533,13 @@ impl LogicalDevice {
             .map(|f| f.phy_index as u32)
             .collect::<Vec<u32>>();
 
-        let size_in_bytes = out_length * input.len() * std::mem::size_of::<f32>();
+        let size_in_bytes = out_length * input.len() * STRIDE;
         let cpu_buffer = Buffer::new(
+            &self.device,
             &self.allocator,
             size_in_bytes.try_into().unwrap(),
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-            vk_mem::MemoryUsage::CpuToGpu,
-            vk::SharingMode::CONCURRENT,
+            MemoryLocation::CpuToGpu,
             &queue_family_indices,
         ).unwrap();
 
@@ -657,14 +662,18 @@ impl LogicalDevice {
             })
             .collect::<Vec<_>>();
 
-        let mapping = self.allocator.map_memory(&cpu_buffer.allocation).unwrap();
+        let mapping = cpu_buffer.allocation.mapped_ptr().unwrap().as_ptr();
         let result = slice::from_raw_parts::<f32>(mapping as *const f32, out_length * input.len());
-        self.allocator.unmap_memory(&cpu_buffer.allocation);
 
         println!("Results gathered {}ms", run_timer.elapsed().as_millis());
 
-        self.allocator.destroy_buffer(cpu_buffer.buffer, &cpu_buffer.allocation);
-        res.iter().for_each(|f| self.allocator.destroy_buffer(f.buffer, &f.allocation));
+        let mut malloc = self.allocator.lock().unwrap();
+        malloc.free(cpu_buffer.allocation).unwrap();
+        self.device.destroy_buffer(cpu_buffer.buffer, None);
+        res.into_iter().for_each(|f| {
+            malloc.free(f.allocation).unwrap();
+            self.device.destroy_buffer(f.buffer, None);
+        });
 
         func.drop(&self.device);
         println!("Resource cleanup done {}ms", run_timer.elapsed().as_millis());
