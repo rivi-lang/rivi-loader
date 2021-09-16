@@ -90,7 +90,12 @@ fn run(input: Vec<Vec<Vec<f32>>>) {
         let run_timer = Instant::now();
         for x in 0..5 {
 
-            let _result = ldevice.execute(&input, 1146024, &shader);
+            let _result = ldevice.execute(
+                &input,
+                1146024,
+                &shader,
+                &ldevice.fences
+            );
             println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
 
             //dbg!(_result.iter().sum::<f32>() == 490058.0*NUM as f32);

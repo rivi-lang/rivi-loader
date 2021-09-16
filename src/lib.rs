@@ -517,31 +517,32 @@ impl LogicalDevice {
             .collect()
     }
 
-    pub unsafe fn execute(&self, input: &Vec<Vec<Vec<f32>>>, out_length: u64, spirv: &spirv::SPIRV) -> &[f32] {
+    pub unsafe fn execute(&self, input: &Vec<Vec<Vec<f32>>>, out_length: usize, spirv: &spirv::SPIRV, fences: &[Fence]) -> &[f32] {
 
         let run_timer = Instant::now();
         let func = load(&self.device, spirv).unwrap();
         let descriptor_count = spirv.dslbs.len() as u32;
 
-        let queue_family_indices = self.fences
+        let queue_family_indices = fences
             .iter()
             .map(|f| f.phy_index as u32)
             .collect::<Vec<u32>>();
 
+        let size_in_bytes = out_length * input.len() * std::mem::size_of::<f32>();
         let cpu_buffer = Buffer::new(
             &self.allocator,
-            (out_length*input.len() as u64) * std::mem::size_of::<f32>() as u64,
+            size_in_bytes.try_into().unwrap(),
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
             vk_mem::MemoryUsage::CpuToGpu,
             vk::SharingMode::CONCURRENT,
             &queue_family_indices,
         ).unwrap();
 
-        let range = input.len() / self.fences.len();
+        let range = input.len() / fences.len();
 
         println!("Commands {}ms", run_timer.elapsed().as_millis());
 
-        let res = self.fences
+        let res = fences
             .par_iter()
             .enumerate()
             .flat_map(|(fence_i, fence)| {
@@ -657,7 +658,7 @@ impl LogicalDevice {
             .collect::<Vec<_>>();
 
         let mapping = self.allocator.map_memory(&cpu_buffer.allocation).unwrap();
-        let result = slice::from_raw_parts::<f32>(mapping as *const f32, (out_length*input.len() as u64).try_into().unwrap());
+        let result = slice::from_raw_parts::<f32>(mapping as *const f32, out_length * input.len());
         self.allocator.unmap_memory(&cpu_buffer.allocation);
 
         println!("Results gathered {}ms", run_timer.elapsed().as_millis());
@@ -670,152 +671,6 @@ impl LogicalDevice {
 
         result
     }
-
-    pub fn infered_execute(&self, input: Vec<Vec<f32>>, out_length: usize, spirv: &SPIRV) -> &[f32] { unsafe {
-
-        let run_timer = Instant::now();
-        let func = load(&self.device, spirv).unwrap();
-        let descriptor_count = spirv.dslbs.len() as u32;
-
-        let queue_family_indices = self.fences
-            .iter()
-            .map(|fence| fence.phy_index as u32)
-            .collect::<Vec<u32>>();
-
-        let cpu_buffer = Buffer::new(
-            &self.allocator,
-            (input[0].len() as u64) * std::mem::size_of::<f32>() as u64,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-            vk_mem::MemoryUsage::CpuToGpu,
-            vk::SharingMode::CONCURRENT,
-            &queue_family_indices,
-        ).unwrap();
-
-        let range = input.len();
-
-        let res = self.fences
-            [0..1]
-            .iter()
-            .enumerate()
-            .flat_map(|(fence_i, fence)| {
-
-                let command = Command::new(
-                    fence.phy_index.try_into().unwrap(),
-                    descriptor_count,
-                    1,
-                    &func.set_layouts,
-                    1,
-                    &self.device,
-                ).unwrap();
-
-                let index = 0;
-
-                let index_offset = range * fence_i + index;
-
-                let cpu_buffers = self.create_cpu_inputs(&queue_family_indices, &input);
-
-                let cpu_offset: vk::DeviceSize = (cpu_buffer.device_size / input.len() as u64) * index_offset as u64;
-                let gpu_offset: vk::DeviceSize = (cpu_buffer.device_size / input.len() as u64) * index_offset as u64;
-                let gpu_chunk_size = cpu_buffer.device_size / input.len() as u64;
-
-                let buffer_infos = (0..=cpu_buffers.len())
-                    .into_iter()
-                    .map(|f| match f {
-                        0 => [vk::DescriptorBufferInfo::builder()
-                            .buffer(cpu_buffer.buffer)
-                            .offset(gpu_offset.try_into().unwrap())
-                            .range(gpu_chunk_size.try_into().unwrap())
-                            .build()],
-                        _ => [vk::DescriptorBufferInfo::builder()
-                            .buffer(cpu_buffers.get(f-1).unwrap().buffer)
-                            .offset(0)
-                            .range(vk::WHOLE_SIZE)
-                            .build()],
-                    })
-                    .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
-
-                let ds = command.descriptor_sets
-                    .get(index)
-                    .unwrap()
-                    .to_owned();
-
-                let wds = buffer_infos
-                    .iter()
-                    .enumerate()
-                    .map(|(index, buf)|
-                        vk::WriteDescriptorSet::builder()
-                            .dst_set(ds)
-                            .dst_binding(index.try_into().unwrap())
-                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                            .buffer_info(buf)
-                            .build()
-                    )
-                    .collect::<Vec<vk::WriteDescriptorSet>>();
-
-                self.device.update_descriptor_sets(&wds, &[]);
-
-                self.device.begin_command_buffer(command.command_buffers[index], &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
-
-                cpu_buffers.iter().for_each(|cpu| {
-                    self.device.cmd_copy_buffer(
-                        command.command_buffers[index],
-                        cpu.buffer,
-                        cpu.buffer,
-                        &[vk::BufferCopy::builder()
-                            .src_offset(gpu_offset)
-                            .dst_offset(cpu_offset)
-                            .size(cpu.device_size)
-                            .build()
-                        ],
-                    )
-                });
-
-                self.device.cmd_bind_pipeline(command.command_buffers[index], vk::PipelineBindPoint::COMPUTE, func.pipeline);
-                self.device.cmd_bind_descriptor_sets(command.command_buffers[index], vk::PipelineBindPoint::COMPUTE, func.pipeline_layout, 0, &[ds], &[]);
-                self.device.cmd_dispatch(command.command_buffers[index], 1024, 1, 1);
-
-                self.device.cmd_copy_buffer(
-                    command.command_buffers[index],
-                    cpu_buffer.buffer,
-                    cpu_buffer.buffer,
-                    &[vk::BufferCopy::builder()
-                        .src_offset(0)
-                        .dst_offset(0)
-                        .size(gpu_chunk_size)
-                        .build()],
-                );
-                self.device.end_command_buffer(command.command_buffers[index]).expect("End commandbuffer");
-
-                println!("Command buffers {}ms", run_timer.elapsed().as_millis());
-
-                fence.submit(&self.device, &command.command_buffers);
-                self.device.wait_for_fences(&[fence.fence], true, std::u64::MAX).expect("Wait for fence failed.");
-                self.device.reset_fences(&[fence.fence]).unwrap();
-
-                println!("After fences {}ms", run_timer.elapsed().as_millis());
-
-                self.device.destroy_command_pool(command.command_pool, None);
-                self.device.destroy_descriptor_pool(command.descriptor_pool, None);
-
-                cpu_buffers
-
-            })
-            .collect::<Vec<_>>();
-
-        let mapping = self.allocator.map_memory(&cpu_buffer.allocation).unwrap();
-        let result = slice::from_raw_parts::<f32>(mapping as *const f32, out_length);
-        self.allocator.unmap_memory(&cpu_buffer.allocation);
-
-        println!("Results gathered {}ms", run_timer.elapsed().as_millis());
-
-        self.allocator.destroy_buffer(cpu_buffer.buffer, &cpu_buffer.allocation);
-        res.iter().for_each(|f| self.allocator.destroy_buffer(f.buffer, &f.allocation));
-
-        func.drop(&self.device);
-        println!("Resource cleanup done {}ms", run_timer.elapsed().as_millis());
-
-        result
-    }}
 }
 
 #[cfg(test)]
