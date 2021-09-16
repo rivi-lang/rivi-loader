@@ -19,7 +19,7 @@ exclude = [
 
 [dependencies]
 ash = "0.32.1"
-vk-mem = { git = "https://github.com/matthewjberger/vk-mem-rs", version = "0.2.3" }
+vk-mem = { git = "https://github.com/gwihlidal/vk-mem-rs", version = "0.2.3" }
 rayon = "1.5.1"
 rspirv = "0.10.0"
 
