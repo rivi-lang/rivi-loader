@@ -3,6 +3,17 @@ name = "rivi-loader"
 version = "0.1.0"
 authors = ["Juuso Haavisto <juuso@mail.com>"]
 edition = "2018"
+license = "GPL-3.0"
+description = "Vulkan compute loader"
+homepage = "https://github.com/periferia-labs/rivi-loader"
+repository = "https://github.com/periferia-labs/rivi-loader"
+readme = "README.md"
+keywords = ["gpgpu", "vulkan", "spirv", "spir-v"]
+categories = ["accessibility", "concurrency", "game-development", "hardware-support", "science"]
+exclude = [
+    "examples",
+    "src/shader",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
