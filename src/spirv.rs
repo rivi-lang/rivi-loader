@@ -3,20 +3,25 @@ use std::{error::Error, io};
 use ash::vk;
 use rspirv::dr::Module;
 
+
 pub struct SPIRV {
-    pub binary: Vec<u32>,
-    pub dslbs: Vec<vk::DescriptorSetLayoutBinding>,
+    pub(crate) binary: Vec<u32>,
+    pub(crate) dslbs: Vec<vk::DescriptorSetLayoutBinding>,
 }
 
 impl SPIRV {
 
-    fn module(binary: &[u32]) -> Result<Module, Box<dyn Error>> {
+    fn module(
+        binary: &[u32]
+    ) -> Result<Module, Box<dyn Error>> {
         let mut loader = rspirv::dr::Loader::new();
         rspirv::binary::parse_words(binary, &mut loader)?;
         Ok(loader.module())
     }
 
-    fn binding_count(module: &Module) -> Result<usize, Box<dyn Error>> {
+    fn binding_count(
+        module: &Module
+    ) -> Result<usize, Box<dyn Error>> {
         let binding_count = module
             .annotations
             .iter()
@@ -35,7 +40,9 @@ impl SPIRV {
         Ok(binding_count)
     }
 
-    fn descriptor_set_layout_bindings(binding_count: usize) -> Vec<vk::DescriptorSetLayoutBinding> {
+    fn descriptor_set_layout_bindings(
+        binding_count: usize
+    ) -> Vec<vk::DescriptorSetLayoutBinding> {
         (0..binding_count)
             .into_iter()
             .map(|i|
@@ -49,7 +56,9 @@ impl SPIRV {
             .collect::<Vec<vk::DescriptorSetLayoutBinding>>()
     }
 
-    pub fn new<R: io::Read + io::Seek>(x: &mut R) -> Result<SPIRV, Box<dyn Error>> {
+    pub fn new<R: io::Read + io::Seek>(
+        x: &mut R
+    ) -> Result<SPIRV, Box<dyn Error>> {
         let binary = ash::util::read_spv(x)?;
         let module = SPIRV::module(&binary)?;
         let binding_count = SPIRV::binding_count(&module)?;
@@ -66,7 +75,7 @@ mod tests {
 
     #[test]
     fn spirv_new_from_file() {
-        let mut spirv = std::io::Cursor::new(&include_bytes!("./shader/apply.spv")[..]);
+        let mut spirv = std::io::Cursor::new(&include_bytes!("../examples/rf/shader/apply.spv")[..]);
         SPIRV::new(&mut spirv).expect("can load shader");
     }
 }

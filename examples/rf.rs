@@ -9,12 +9,11 @@ use rivi_loader::spirv::SPIRV;
 fn example(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
-        .from_path(f)
-        .expect("Cannot read fild");
+        .from_path(f)?;
     for record in reader.records() {
         let record = record?;
         for field in record.iter() {
-            let n: f32 = field.parse().unwrap();
+            let n: f32 = field.parse()?;
             v.push(n);
         }
     }
@@ -24,37 +23,37 @@ fn example(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {
 fn main() {
 
     let mut feature: Vec<f32> = Vec::new();
-    if let Err(err) = example("examples/dataset/feature.csv", &mut feature) {
+    if let Err(err) = example("examples/rf/dataset/feature.csv", &mut feature) {
         println!("error running example: {}", err);
         process::exit(1);
     }
 
     let mut th: Vec<f32> = Vec::new();
-    if let Err(err) = example("examples/dataset/threshold.csv", &mut th) {
+    if let Err(err) = example("examples/rf/dataset/threshold.csv", &mut th) {
         println!("error running example: {}", err);
         process::exit(1);
     }
 
     let mut left: Vec<f32> = Vec::new();
-    if let Err(err) = example("examples/dataset/left.csv", &mut left) {
+    if let Err(err) = example("examples/rf/dataset/left.csv", &mut left) {
         println!("error running example: {}", err);
         process::exit(1);
     }
 
     let mut right: Vec<f32> = Vec::new();
-    if let Err(err) = example("examples/dataset/right.csv", &mut right) {
+    if let Err(err) = example("examples/rf/dataset/right.csv", &mut right) {
         println!("error running example: {}", err);
         process::exit(1);
     }
 
     let mut values: Vec<f32> = Vec::new();
-    if let Err(err) = example("examples/dataset/values.csv", &mut values) {
+    if let Err(err) = example("examples/rf/dataset/values.csv", &mut values) {
         println!("error running example: {}", err);
         process::exit(1);
     }
 
     let mut x: Vec<f32> = Vec::new();
-    if let Err(err) = example("examples/dataset/x.csv", &mut x) {
+    if let Err(err) = example("examples/rf/dataset/x.csv", &mut x) {
         println!("error running example: {}", err);
         process::exit(1);
     }
@@ -79,7 +78,7 @@ fn run(input: Vec<Vec<Vec<f32>>>) {
         println!("Found {} thread(s)", logical_devices.iter().map(|f| f.fences.len()).sum::<usize>());
         println!("App new {}ms", init_timer.elapsed().as_millis());
 
-        let mut spirv = std::io::Cursor::new(&include_bytes!("./shader/apply.spv")[..]);
+        let mut spirv = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
         let shader = SPIRV::new(&mut spirv).unwrap();
         println!("App load {}ms", init_timer.elapsed().as_millis());
 

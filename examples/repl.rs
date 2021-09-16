@@ -22,7 +22,7 @@ impl fmt::Display for Operator {
 fn spirv_load(op: Operator) -> Result<SPIRV, Box<dyn Error>> {
     match op {
       Operator::Sum => {
-        let mut spirv = std::io::Cursor::new(&include_bytes!("./shader/sum.spv")[..]);
+        let mut spirv = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
         SPIRV::new(&mut spirv)
       },
       _ => todo!("operator not implemented")
