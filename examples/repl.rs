@@ -45,15 +45,13 @@ fn main() {
     let result_len = param_a.len();
 
     let ldevice = logical_devices.first().unwrap();
-    let func = rivi_loader::load(&ldevice.device, &shader).unwrap();
 
     let run_timer = Instant::now();
     let result = ldevice.infered_execute(
         vec![param_a, param_b],
         result_len,
-        &func,
+        &shader,
     );
-    unsafe { func.Drop(&ldevice.device); }
 
     println!("Result: {:?}", result);
 

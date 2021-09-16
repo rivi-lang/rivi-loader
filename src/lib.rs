@@ -34,7 +34,7 @@ pub struct Shader {
 }
 
 impl Shader {
-    pub unsafe fn Drop(self, device: &ash::Device) {
+    pub unsafe fn drop(self, device: &ash::Device) {
         device.destroy_pipeline_layout(self.pipeline_layout, None);
         device.destroy_shader_module(self.shader_module, None);
         for set_layout in self.set_layouts {
@@ -517,22 +517,6 @@ impl LogicalDevice {
             .collect()
     }
 
-    fn create_gpu_inputs(&self, queue: &[u32], data_lens: &Vec<usize>) -> Vec<Buffer> {
-        data_lens
-            .iter()
-            .map(|data_len|
-                Buffer::new(
-                    &self.allocator,
-                    (data_len * STRIDE) as u64,
-                    vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
-                    vk_mem::MemoryUsage::GpuOnly,
-                    vk::SharingMode::CONCURRENT,
-                    queue,
-                ).unwrap()
-            )
-            .collect()
-    }
-
     pub unsafe fn execute(&self, input: &Vec<Vec<Vec<f32>>>, out_length: u64, spirv: &spirv::SPIRV) -> &[f32] {
 
         let run_timer = Instant::now();
@@ -643,8 +627,8 @@ impl LogicalDevice {
                             cpu_buffer.buffer,
                             cpu_buffer.buffer,
                             &[vk::BufferCopy::builder()
-                                .src_offset(gpu_offset.try_into().unwrap())
-                                .dst_offset(cpu_offset.try_into().unwrap())
+                                .src_offset(gpu_offset)
+                                .dst_offset(cpu_offset)
                                 .size(gpu_chunk_size)
                                 .build()
                             ],
@@ -681,158 +665,154 @@ impl LogicalDevice {
         self.allocator.destroy_buffer(cpu_buffer.buffer, &cpu_buffer.allocation);
         res.iter().for_each(|f| self.allocator.destroy_buffer(f.buffer, &f.allocation));
 
-        func.Drop(&self.device);
+        func.drop(&self.device);
         println!("Resource cleanup done {}ms", run_timer.elapsed().as_millis());
 
         result
     }
 
-    pub fn infered_execute(&self, input: Vec<Vec<f32>>, out_length: usize, func: &Shader) -> Vec<f32> { unsafe {
+    pub fn infered_execute(&self, input: Vec<Vec<f32>>, out_length: usize, spirv: &SPIRV) -> &[f32] { unsafe {
 
         let run_timer = Instant::now();
-
-        let command = Command::new(
-            self.fences.first().unwrap().phy_index.try_into().unwrap(),
-            1,
-            1,
-            &func.set_layouts,
-            1,
-            &self.device,
-        ).unwrap();
+        let func = load(&self.device, spirv).unwrap();
+        let descriptor_count = spirv.dslbs.len() as u32;
 
         let queue_family_indices = self.fences
             .iter()
-            .map(|fence| {
-                fence.phy_index as u32
-            })
+            .map(|fence| fence.phy_index as u32)
             .collect::<Vec<u32>>();
 
-        // output destination
         let cpu_buffer = Buffer::new(
             &self.allocator,
-            (input[0].len() * STRIDE) as u64,
-            vk::BufferUsageFlags::TRANSFER_DST,
+            (input[0].len() as u64) * std::mem::size_of::<f32>() as u64,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
             vk_mem::MemoryUsage::CpuToGpu,
             vk::SharingMode::CONCURRENT,
             &queue_family_indices,
         ).unwrap();
-        // output source
-        let gpu_buffer = Buffer::new(
-            &self.allocator,
-            (input[0].len() * STRIDE) as u64,
-            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-            vk_mem::MemoryUsage::GpuToCpu,
-            vk::SharingMode::CONCURRENT,
-            &queue_family_indices,
-        ).unwrap();
-        // output
-        let mut buffers = vec![
-            [vk::DescriptorBufferInfo::builder()
-                .buffer(gpu_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE)
-                .build()]
-        ];
 
-        let input_lens: Vec<_> = input
-            .iter()
-            .map(|input| input.len())
-            .collect();
-        let cpu_buffers = self.create_cpu_inputs(&queue_family_indices, &input);
-        let gpu_buffers = self.create_gpu_inputs(&queue_family_indices, &input_lens);
-        // inputs
-        buffers.extend(gpu_buffers
-            .iter()
-            .map(|buf|
-                [vk::DescriptorBufferInfo::builder()
-                    .buffer(buf.buffer)
-                    .offset(0)
-                    .range(vk::WHOLE_SIZE)
-                    .build()]
-            ));
+        let range = input.len();
 
-        let ds = command.descriptor_sets
-            .get(0)
-            .unwrap()
-            .to_owned();
-
-        let wds: Vec<_> = buffers
+        let res = self.fences
+            [0..1]
             .iter()
             .enumerate()
-            .map(|(index, buf)|
-                vk::WriteDescriptorSet::builder()
-                    .dst_set(ds)
-                    .dst_binding(index.try_into().unwrap())
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(buf)
-                    .build()
-            )
-            .collect();
+            .flat_map(|(fence_i, fence)| {
 
-        let cbuffer = command.command_buffers
-            .get(0)
-            .unwrap()
-            .to_owned();
+                let command = Command::new(
+                    fence.phy_index.try_into().unwrap(),
+                    descriptor_count,
+                    1,
+                    &func.set_layouts,
+                    1,
+                    &self.device,
+                ).unwrap();
 
-        self.device.update_descriptor_sets(&wds[..], &[]);
+                let index = 0;
 
-        self.device.begin_command_buffer(cbuffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
+                let index_offset = range * fence_i + index;
 
-        cpu_buffers.iter().zip(gpu_buffers.iter()).for_each(|(cpu, gpu)| {
-            self.device.cmd_copy_buffer(
-                cbuffer,
-                cpu.buffer,
-                gpu.buffer,
-                &[vk::BufferCopy::builder()
-                    .src_offset(0)
-                    .dst_offset(0)
-                    .size(cpu.device_size)
-                    .build()
-                ],
-            )
-        });
+                let cpu_buffers = self.create_cpu_inputs(&queue_family_indices, &input);
 
-        self.device.cmd_bind_pipeline(cbuffer, vk::PipelineBindPoint::COMPUTE, func.pipeline);
-        self.device.cmd_bind_descriptor_sets(cbuffer, vk::PipelineBindPoint::COMPUTE, func.pipeline_layout, 0, &[ds], &[]);
-        self.device.cmd_dispatch(cbuffer, *input_lens.iter().max().unwrap() as u32, 1, 1);
+                let cpu_offset: vk::DeviceSize = (cpu_buffer.device_size / input.len() as u64) * index_offset as u64;
+                let gpu_offset: vk::DeviceSize = (cpu_buffer.device_size / input.len() as u64) * index_offset as u64;
+                let gpu_chunk_size = cpu_buffer.device_size / input.len() as u64;
 
-        self.device.cmd_copy_buffer(
-            cbuffer,
-            gpu_buffer.buffer,
-            cpu_buffer.buffer,
-            &[vk::BufferCopy::builder()
-                .src_offset(0)
-                .dst_offset(0)
-                .size(gpu_buffer.device_size)
-                .build()],
-        );
-        self.device.end_command_buffer(cbuffer).expect("End commandbuffer");
+                let buffer_infos = (0..=cpu_buffers.len())
+                    .into_iter()
+                    .map(|f| match f {
+                        0 => [vk::DescriptorBufferInfo::builder()
+                            .buffer(cpu_buffer.buffer)
+                            .offset(gpu_offset.try_into().unwrap())
+                            .range(gpu_chunk_size.try_into().unwrap())
+                            .build()],
+                        _ => [vk::DescriptorBufferInfo::builder()
+                            .buffer(cpu_buffers.get(f-1).unwrap().buffer)
+                            .offset(0)
+                            .range(vk::WHOLE_SIZE)
+                            .build()],
+                    })
+                    .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
 
-        self.fences.first().unwrap().submit(&self.device, &[cbuffer]);
+                let ds = command.descriptor_sets
+                    .get(index)
+                    .unwrap()
+                    .to_owned();
 
-        println!("Command buffers {}ms", run_timer.elapsed().as_millis());
+                let wds = buffer_infos
+                    .iter()
+                    .enumerate()
+                    .map(|(index, buf)|
+                        vk::WriteDescriptorSet::builder()
+                            .dst_set(ds)
+                            .dst_binding(index.try_into().unwrap())
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .buffer_info(buf)
+                            .build()
+                    )
+                    .collect::<Vec<vk::WriteDescriptorSet>>();
 
-        self.device.wait_for_fences(&[self.fences.first().unwrap().fence], true, std::u64::MAX).expect("Wait for fence failed.");
+                self.device.update_descriptor_sets(&wds, &[]);
 
-        println!("After fences {}ms", run_timer.elapsed().as_millis());
+                self.device.begin_command_buffer(command.command_buffers[index], &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
+
+                cpu_buffers.iter().for_each(|cpu| {
+                    self.device.cmd_copy_buffer(
+                        command.command_buffers[index],
+                        cpu.buffer,
+                        cpu.buffer,
+                        &[vk::BufferCopy::builder()
+                            .src_offset(gpu_offset)
+                            .dst_offset(cpu_offset)
+                            .size(cpu.device_size)
+                            .build()
+                        ],
+                    )
+                });
+
+                self.device.cmd_bind_pipeline(command.command_buffers[index], vk::PipelineBindPoint::COMPUTE, func.pipeline);
+                self.device.cmd_bind_descriptor_sets(command.command_buffers[index], vk::PipelineBindPoint::COMPUTE, func.pipeline_layout, 0, &[ds], &[]);
+                self.device.cmd_dispatch(command.command_buffers[index], 1024, 1, 1);
+
+                self.device.cmd_copy_buffer(
+                    command.command_buffers[index],
+                    cpu_buffer.buffer,
+                    cpu_buffer.buffer,
+                    &[vk::BufferCopy::builder()
+                        .src_offset(0)
+                        .dst_offset(0)
+                        .size(gpu_chunk_size)
+                        .build()],
+                );
+                self.device.end_command_buffer(command.command_buffers[index]).expect("End commandbuffer");
+
+                println!("Command buffers {}ms", run_timer.elapsed().as_millis());
+
+                fence.submit(&self.device, &command.command_buffers);
+                self.device.wait_for_fences(&[fence.fence], true, std::u64::MAX).expect("Wait for fence failed.");
+                self.device.reset_fences(&[fence.fence]).unwrap();
+
+                println!("After fences {}ms", run_timer.elapsed().as_millis());
+
+                self.device.destroy_command_pool(command.command_pool, None);
+                self.device.destroy_descriptor_pool(command.descriptor_pool, None);
+
+                cpu_buffers
+
+            })
+            .collect::<Vec<_>>();
 
         let mapping = self.allocator.map_memory(&cpu_buffer.allocation).unwrap();
-        let result = slice::from_raw_parts::<f32>(mapping as *const f32, out_length).to_vec();
+        let result = slice::from_raw_parts::<f32>(mapping as *const f32, out_length);
         self.allocator.unmap_memory(&cpu_buffer.allocation);
 
         println!("Results gathered {}ms", run_timer.elapsed().as_millis());
 
-        cpu_buffers
-            .iter()
-            .for_each(|f| self.allocator.destroy_buffer(f.buffer, &f.allocation));
-        gpu_buffers
-            .iter()
-            .for_each(|f| self.allocator.destroy_buffer(f.buffer, &f.allocation));
         self.allocator.destroy_buffer(cpu_buffer.buffer, &cpu_buffer.allocation);
-        self.allocator.destroy_buffer(gpu_buffer.buffer, &gpu_buffer.allocation);
+        res.iter().for_each(|f| self.allocator.destroy_buffer(f.buffer, &f.allocation));
 
-        self.device.destroy_command_pool(command.command_pool, None);
-        self.device.destroy_descriptor_pool(command.descriptor_pool, None);
+        func.drop(&self.device);
+        println!("Resource cleanup done {}ms", run_timer.elapsed().as_millis());
 
         result
     }}
