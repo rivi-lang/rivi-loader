@@ -1,8 +1,11 @@
 #[cfg(target_os = "macos")]
 extern crate metal;
 
+use std::error::Error;
 use std::time::Instant;
 use std::fmt;
+
+use rivi_loader::spirv::SPIRV;
 
 enum Operator {
   Sum
@@ -13,22 +16,23 @@ impl fmt::Display for Operator {
       match self {
         Operator::Sum => write!(f, "+")
       }
-      // or, alternatively:
-      // fmt::Debug::fmt(self, f)
   }
 }
 
-fn spirv_load(op: Operator) -> Vec<u32> {
-    let mut spirv = match op {
-        Operator::Sum => std::io::Cursor::new(&include_bytes!("./shader/sum.spv")[..]),
-    };
-    ash::util::read_spv(&mut spirv).expect("Failed to read vertex shader spv file")
+fn spirv_load(op: Operator) -> Result<SPIRV, Box<dyn Error>> {
+    match op {
+      Operator::Sum => {
+        let mut spirv = std::io::Cursor::new(&include_bytes!("./shader/sum.spv")[..]);
+        SPIRV::new(&mut spirv)
+      },
+      _ => todo!("operator not implemented")
+    }
 }
 
 fn main() {
     let param_a = [1.0, 2.0].to_vec();
     let param_b = [3.0, 4.0].to_vec();
-    let shader = spirv_load(Operator::Sum);
+    let shader = spirv_load(Operator::Sum).expect("could not load spirv");
 
     let init_timer = Instant::now();
     let (app, logical_devices) = rivi_loader::new(true).unwrap();
@@ -41,7 +45,7 @@ fn main() {
     let result_len = param_a.len();
 
     let ldevice = logical_devices.first().unwrap();
-    let func = rivi_loader::load(&ldevice.device, &shader, 3).unwrap();
+    let func = rivi_loader::load(&ldevice.device, &shader).unwrap();
 
     let run_timer = Instant::now();
     let result = ldevice.infered_execute(

@@ -4,6 +4,8 @@ extern crate metal;
 use std::{error::Error, time::Instant};
 use std::process;
 
+use rivi_loader::spirv::SPIRV;
+
 fn example(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -78,7 +80,7 @@ fn run(input: Vec<Vec<Vec<f32>>>) {
         println!("App new {}ms", init_timer.elapsed().as_millis());
 
         let mut spirv = std::io::Cursor::new(&include_bytes!("./shader/apply.spv")[..]);
-        let shader = ash::util::read_spv(&mut spirv).expect("Failed to read vertex shader spv file");
+        let shader = SPIRV::new(&mut spirv).unwrap();
         println!("App load {}ms", init_timer.elapsed().as_millis());
 
         //assert_eq!(NUM % app.logical_devices.iter().map(|f| f.fences.len()).sum::<usize>() as i32, 0);

@@ -1,11 +1,14 @@
 use ash::{vk, Entry, extensions::ext::DebugUtils};
 use ash::version::{DeviceV1_0, EntryV1_0, InstanceV1_0, InstanceV1_1};
 use rayon::prelude::*;
+use spirv::SPIRV;
 
 use std::{convert::TryInto, error::Error, slice};
 use std::default::Default;
 use std::ffi::CString;
 use std::time::Instant;
+
+pub mod spirv;
 
 pub struct App {
     // Entry: Loads the Vulkan library.
@@ -134,7 +137,7 @@ impl App {
         let gpus = self.instance
             .enumerate_physical_devices()?
             .iter()
-            .map(|pdevice| {
+            .filter_map(|pdevice| {
                 // Retrieving Subgroup operations will segfault a Mac
                 // https://www.khronos.org/blog/vulkan-subgroup-tutorial
                 let mut sp = vk::PhysicalDeviceSubgroupProperties::builder();
@@ -165,7 +168,6 @@ impl App {
                     true => None,
                 }
             })
-            .filter_map(|f| Some(f)? )
             .collect::<Vec<GPU>>();
 
         match gpus.is_empty() {
@@ -403,21 +405,10 @@ impl Command {
     }
 }
 
-pub fn load(device: &ash::Device, shader: &[u32], binding_count: u32) -> Result<Shader, Box<dyn Error>>  {
-    let dslb = (0..binding_count)
-        .into_iter()
-        .map(|i|
-            vk::DescriptorSetLayoutBinding::builder()
-                .binding(i)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                .build()
-        )
-        .collect::<Vec<vk::DescriptorSetLayoutBinding>>();
+pub fn load(device: &ash::Device, spirv: &SPIRV) -> Result<Shader, Box<dyn Error>>  {
     unsafe {
         let set_layout = device.create_descriptor_set_layout(
-            &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&dslb),
+            &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&spirv.dslbs),
             None,
         )?;
         let set_layouts = vec![set_layout];
@@ -430,7 +421,7 @@ pub fn load(device: &ash::Device, shader: &[u32], binding_count: u32) -> Result<
         println!("Pipeline layout done");
 
         let shader_entry_name = CString::new("main")?;
-        let shader_module = device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&shader), None)?;
+        let shader_module = device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&spirv.binary), None)?;
         let entry_point = vk::PipelineShaderStageCreateInfo {
             p_name: shader_entry_name.as_ptr(),
             module: shader_module,
@@ -542,12 +533,11 @@ impl LogicalDevice {
             .collect()
     }
 
-    pub unsafe fn execute(&self, input: &Vec<Vec<Vec<f32>>>, out_length: u64, spirv: &[u32]) -> &[f32] {
+    pub unsafe fn execute(&self, input: &Vec<Vec<Vec<f32>>>, out_length: u64, spirv: &spirv::SPIRV) -> &[f32] {
 
         let run_timer = Instant::now();
-
-        let binding_count = 7;
-        let func = load(&self.device, spirv, binding_count).unwrap();
+        let func = load(&self.device, spirv).unwrap();
+        let descriptor_count = spirv.dslbs.len() as u32;
 
         let queue_family_indices = self.fences
             .iter()
@@ -574,7 +564,7 @@ impl LogicalDevice {
 
                 let command = Command::new(
                     fence.phy_index.try_into().unwrap(),
-                    binding_count,
+                    descriptor_count,
                     input.len().try_into().unwrap(),
                     &func.set_layouts,
                     range.try_into().unwrap(),
@@ -631,7 +621,7 @@ impl LogicalDevice {
 
                         self.device.begin_command_buffer(command.command_buffers[index], &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
 
-                        cpu_buffers.iter().for_each(|(cpu)|
+                        cpu_buffers.iter().for_each(|cpu|
                             self.device.cmd_copy_buffer(
                                 command.command_buffers[index],
                                 cpu.buffer,
@@ -846,4 +836,23 @@ impl LogicalDevice {
 
         result
     }}
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use crate::new;
+
+    #[test]
+    fn app_new() {
+        let init_timer = Instant::now();
+        let res = new(false);
+        assert!(res.is_ok());
+        let (app, devices) = res.unwrap();
+        println!("Found {} logical device(s)", devices.len());
+        println!("Found {} thread(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
+        println!("App new {}ms", init_timer.elapsed().as_millis());
+    }
+
 }
