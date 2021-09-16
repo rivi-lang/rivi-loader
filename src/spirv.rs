@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io, path::PathBuf};
+use std::{error::Error, io};
 
 use ash::vk;
 use rspirv::dr::Module;

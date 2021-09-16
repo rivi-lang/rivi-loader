@@ -1,7 +1,6 @@
 #[cfg(target_os = "macos")]
 extern crate metal;
 
-use std::convert::TryInto;
 use std::error::Error;
 use std::time::Instant;
 use std::fmt;
