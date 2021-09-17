@@ -1,8 +1,8 @@
-use std::{error::Error, ffi::CString};
+use std::{borrow::BorrowMut, error::Error};
 
 use ash::{Entry, extensions::ext::DebugUtils, version::{EntryV1_0, InstanceV1_0}, vk};
 
-use crate::{compute::Compute, debug_layer::DebugLayer, gpu::GPU};
+use crate::{compute::Compute, debug_layer::{DebugLayer, DebugOption}, gpu::GPU};
 
 
 pub struct Vulkan {
@@ -18,47 +18,26 @@ pub struct Vulkan {
 impl Vulkan {
 
     pub(crate) unsafe fn new(
-        debug_flag: bool
+        debug: DebugOption
     ) -> Result<Vulkan, Box<dyn Error>> {
 
-        let mut layer_names: Vec<CString> = Vec::new();
-        if debug_flag {
-            layer_names.push(CString::new("VK_LAYER_KHRONOS_validation")?);
-            //layer_names.push(CString::new("VK_LAYER_LUNARG_api_dump")?);
-        };
-        let layers_names_raw: Vec<_> = layer_names
+        let (layers, mut info) = debug.cons()?;
+        let vk_layers: Vec<_> = layers
             .iter()
             .map(|raw_name| raw_name.as_ptr())
             .collect();
 
         let _entry = Entry::new()?;
 
-        let mut debug_info = vk::DebugUtilsMessengerCreateInfoEXT {
-            ..Default::default()
-        };
-        if debug_flag {
-            debug_info = vk::DebugUtilsMessengerCreateInfoEXT {
-                message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-                message_type: vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-                    | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-                    | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-                pfn_user_callback: Some(DebugLayer::vulkan_debug_utils_callback),
-                ..Default::default()
-            };
-        }
-
         let instance = _entry
             .create_instance(&vk::InstanceCreateInfo::builder()
-                .push_next(&mut debug_info)
+                .push_next(info.borrow_mut())
                 .application_info(&vk::ApplicationInfo {
                     api_version: vk::make_version(1, 2, 0),
                     engine_version: 0,
                     ..Default::default()
                 })
-                .enabled_layer_names(&layers_names_raw)
+                .enabled_layer_names(&vk_layers)
                 .enabled_extension_names(&[DebugUtils::name().as_ptr()])
             , None)?;
 
@@ -68,17 +47,8 @@ impl Vulkan {
             None => println!("Using Vulkan 1.0"),
         };
 
-        let debug = match debug_flag {
-            false => None,
-            true => {
-                let loader = DebugUtils::new(&_entry, &instance);
-                let callback = loader.create_debug_utils_messenger(&debug_info, None).unwrap();
-                println!("Debug attached");
-                Some(DebugLayer{loader, callback})
-            }
-        };
-
-        Ok(Vulkan{_entry, instance, debug})
+        let debug_layer = DebugLayer::new(debug, &info, &_entry, &instance)?;
+        Ok(Vulkan{_entry, instance, debug: debug_layer})
     }
 
     pub(crate) unsafe fn gpus(
@@ -129,12 +99,12 @@ impl Drop for Vulkan {
 mod tests {
     use std::time::Instant;
 
-    use crate::new;
+    use crate::{debug_layer::DebugOption, new};
 
     #[test]
     fn app_new() {
         let init_timer = Instant::now();
-        let res = new(false);
+        let res = new(DebugOption::None);
         assert!(res.is_ok());
         let (_app, devices) = res.unwrap();
         println!("Found {} logical device(s)", devices.len());

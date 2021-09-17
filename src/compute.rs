@@ -42,13 +42,13 @@ impl Compute {
             .collect()
     }
 
-    pub unsafe fn execute(
+    pub fn execute(
         &self,
         input: &Vec<Vec<Vec<f32>>>,
         out_length: usize,
         spirv: &spirv::SPIRV,
         fences: &[Fence]
-    ) -> &[f32] {
+    ) -> &[f32] { unsafe {
 
         let run_timer = Instant::now();
         let func = Shader::new(&self.device, spirv).unwrap();
@@ -204,7 +204,7 @@ impl Compute {
         println!("Resource cleanup done {}ms", run_timer.elapsed().as_millis());
 
         result
-    }
+    }}
 }
 
 impl Drop for Compute {
