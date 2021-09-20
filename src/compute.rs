@@ -1,6 +1,6 @@
-use std::{convert::TryInto, slice, sync::Mutex, time::Instant};
+use std::{convert::TryInto, fmt, slice, sync::Mutex, time::Instant};
 
-use ash::{version::DeviceV1_0, vk};
+use ash::{version::DeviceV1_0, vk::{self, PhysicalDeviceMemoryProperties}};
 use gpu_allocator::MemoryLocation;
 use rayon::prelude::*;
 
@@ -13,6 +13,48 @@ pub struct Compute {
     pub device: ash::Device,
     pub allocator: Mutex<gpu_allocator::VulkanAllocator>,
     pub fences: Vec<Fence>,
+
+    pub(crate) memory: PhysicalDeviceMemoryProperties,
+}
+
+impl fmt::Debug for Compute {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+
+        println!("  Memory types: {}", self.memory.memory_type_count);
+        self.memory
+            .memory_types
+            .iter()
+            .filter(|mt| !mt.property_flags.is_empty())
+            .enumerate()
+            .for_each(|(idx, mt)| {
+                println!("      Index {} {:?} (heap {})", idx, mt.property_flags, mt.heap_index);
+            });
+
+        println!("  Memory heaps: {}", self.memory.memory_heap_count);
+        self.memory
+            .memory_heaps
+            .iter()
+            .filter(|mh| mh.size.ne(&0))
+            .enumerate()
+            .for_each(|(idx, mh)| {
+                println!("      {:?} GiB {:?} (heap {})", mh.size / 1_073_741_824, mh.flags, idx);
+            });
+
+        let qfs = self.fences
+            .iter()
+            .map(|f| f.phy_index);
+
+        let mut uniqs: Vec<usize> = Vec::new();
+        qfs
+            .into_iter()
+            .for_each(|f| {
+                 if !uniqs.contains(&f) {
+                     uniqs.push(f);
+                 }
+            });
+
+        f.write_fmt(format_args!("  Found {} compute core(s) with {} thread(s)", uniqs.len(), self.fences.len()))
+    }
 }
 
 impl Compute {

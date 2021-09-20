@@ -32,6 +32,22 @@ impl GPU {
         instance
             .fp_v1_1()
             .get_physical_device_properties2(pdevice, &mut dp2);
+
+        let device_name = dp2
+            .properties
+            .device_name
+            .iter()
+            .filter_map(|f| {
+                let u = *f as u8;
+                match u {
+                    0 => None,
+                    _ => Some(u as char),
+                }
+            })
+            .collect::<String>();
+
+        println!("Found device: {} ({:?})", device_name, dp2.properties.device_type);
+        println!("Physical device has subgroup size of: {:?}", sp.subgroup_size);
         println!("Supported subgroup operations: {:?}", sp.supported_operations);
         println!("Supported subgroup stages: {:?}", sp.supported_stages);
 
@@ -61,17 +77,25 @@ impl GPU {
 
         let queue_infos: Vec<_> = self.queue_families
             .iter()
-            .map(|queue|
+            .map(|queue| {
+
+                let queues = (0..queue.queue_count)
+                    .into_iter()
+                    .map(|_| 1.0f32)
+                    .collect::<Vec<f32>>();
+
                 vk::DeviceQueueCreateInfo::builder()
                     .queue_family_index(queue.physical_index as u32)
-                    .queue_priorities(&[1.0f32])
+                    .queue_priorities(&queues)
                     .build()
-            )
+            })
             .collect();
 
         let features = vk::PhysicalDeviceFeatures {
             ..Default::default()
         };
+
+        let memory = instance.get_physical_device_memory_properties(self.physical);
 
         let mut variable_pointers = vk::PhysicalDeviceVariablePointersFeatures::builder()
             .variable_pointers(true)
@@ -123,7 +147,7 @@ impl GPU {
             })
             .collect::<Vec<Fence>>();
 
-        Ok(Compute{ device, allocator: Mutex::new(allocator), fences })
+        Ok(Compute{ device, allocator: Mutex::new(allocator), fences, memory })
     }
 
 }
