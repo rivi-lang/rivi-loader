@@ -91,3 +91,11 @@ impl DebugLayer {
     }
 
 }
+
+impl Drop for DebugLayer {
+    fn drop(
+        &mut self
+    ) {
+        unsafe { self.loader.destroy_debug_utils_messenger(self.callback, None) }
+    }
+}

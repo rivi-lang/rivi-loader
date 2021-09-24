@@ -1,23 +1,18 @@
 use std::{error::Error, time::Instant};
 
 use rivi_loader::debug_layer::DebugOption;
-use rivi_loader::spirv::SPIRV;
+use rivi_loader::shader::Shader;
+
 
 const NUM: i32 = 32;
 
 fn main() {
 
-    let init_timer = Instant::now();
     let input = load_input();
 
-    let (_vulkan, devices) = rivi_loader::new(DebugOption::Validation).unwrap();
+    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
     println!("Found {} compute device(s)", devices.len());
     println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
-    println!("App new {}ms", init_timer.elapsed().as_millis());
-
-    let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
-    let spirv = SPIRV::new(&mut cursor).unwrap();
-    println!("App load {}ms", init_timer.elapsed().as_millis());
 
     // ensure the work is evenly split among cores
     assert_eq!(NUM % devices.iter().map(|f| f.fences.len()).sum::<usize>() as i32, 0);
@@ -25,15 +20,16 @@ fn main() {
     let compute = devices.first().unwrap();
     let cores = &compute.fences;
 
+    let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
+    let shader = Shader::new(compute, &mut cursor).unwrap();
+
     let run_timer = Instant::now();
     for x in 0..5 {
-        let _result = compute.execute(&input, 1146024, &spirv, cores);
+        let _result = compute.execute(&input, 1146024, &shader, cores);
         println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
-        //dbg!(_result.iter().sum::<f32>() == 490058.0*NUM as f32);
+        //dbg!((_result.iter().sum::<f32>() - 490058.0*NUM as f32).abs() < 0.1);
     }
-
     println!("App executions {}ms", run_timer.elapsed().as_millis());
-    println!("Total time {}ms", init_timer.elapsed().as_millis());
 }
 
 fn csv(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {

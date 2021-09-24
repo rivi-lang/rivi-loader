@@ -3,14 +3,16 @@ use std::error::Error;
 use ash::{version::DeviceV1_0, vk};
 
 
-pub(crate) struct Command {
-    pub(crate) descriptor_pool: vk::DescriptorPool,
-    pub(crate) command_pool: vk::CommandPool,
-    pub(crate) command_buffers: Vec<vk::CommandBuffer>,
-    pub(crate) descriptor_sets: Vec<vk::DescriptorSet>,
+pub struct Command<'a> {
+    pub descriptor_pool: vk::DescriptorPool,
+    pub command_pool: vk::CommandPool,
+    pub command_buffers: Vec<vk::CommandBuffer>,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
+
+    device: &'a ash::Device,
 }
 
-impl Command {
+impl <'a> Command<'_> {
 
     fn descriptor_pool(
         device: &ash::Device,
@@ -47,14 +49,14 @@ impl Command {
         unsafe { Ok(device.allocate_command_buffers(&command_buffers_info)?) }
     }
 
-    pub(crate) fn new(
+    pub fn new(
         queue_family_index: u32,
         descriptor_count: u32,
         max_sets: u32,
         set_layouts: &[vk::DescriptorSetLayout],
         command_buffer_count: u32,
-        device: &ash::Device,
-    ) -> Result<Command, Box<dyn Error>> {
+        device: &'a ash::Device,
+    ) -> Result<Command<'a>, Box<dyn Error>> {
 
         let descriptor_pool = Command::descriptor_pool(device, descriptor_count, max_sets)?;
 
@@ -78,6 +80,18 @@ impl Command {
             command_pool,
             command_buffers,
             descriptor_sets,
+            device,
         })
+    }
+}
+
+impl <'a> Drop for Command<'a> {
+    fn drop(
+        &mut self
+    ) {
+        unsafe {
+            self.device.destroy_command_pool(self.command_pool, None);
+            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
+        }
     }
 }

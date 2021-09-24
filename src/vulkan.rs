@@ -12,12 +12,12 @@ pub struct Vulkan {
     // Instance: Loads instance level functions.
     // Needs to outlive the Devices it has created.
     instance: ash::Instance,
-    debug: Option<DebugLayer>,
+    debug_layer: Option<DebugLayer>,
 }
 
 impl Vulkan {
 
-    pub(crate) unsafe fn new(
+    pub fn new(
         debug: DebugOption
     ) -> Result<Vulkan, Box<dyn Error>> {
 
@@ -27,9 +27,9 @@ impl Vulkan {
             .map(|raw_name| raw_name.as_ptr())
             .collect();
 
-        let _entry = Entry::new()?;
+        let _entry = unsafe { Entry::new()? };
 
-        let instance = _entry
+        let instance = unsafe { _entry
             .create_instance(&vk::InstanceCreateInfo::builder()
                 .push_next(info.borrow_mut())
                 .application_info(&vk::ApplicationInfo {
@@ -39,7 +39,7 @@ impl Vulkan {
                 })
                 .enabled_layer_names(&vk_layers)
                 .enabled_extension_names(&[DebugUtils::name().as_ptr()])
-            , None)?;
+            , None)? };
 
         println!("Instance created");
         match _entry.try_enumerate_instance_version()? {
@@ -48,7 +48,7 @@ impl Vulkan {
         };
 
         let debug_layer = DebugLayer::new(debug, &info, &_entry, &instance)?;
-        Ok(Vulkan{_entry, instance, debug: debug_layer})
+        Ok(Vulkan{_entry, instance, debug_layer})
     }
 
     pub(crate) unsafe fn gpus(
@@ -62,7 +62,7 @@ impl Vulkan {
 
         match gpus.is_empty() {
             false => Ok(gpus),
-            true => Err(format!("No compute capable GPUs"))?,
+            true => Err("No compute capable GPUs".to_string().into()),
         }
     }
 
@@ -84,14 +84,8 @@ impl Drop for Vulkan {
     fn drop(
         &mut self
     ) {
-        println!("dropping app");
-        if self.debug.is_some() {
-            let debug = self.debug.as_ref().unwrap();
-            unsafe { debug.loader.destroy_debug_utils_messenger(debug.callback, None) }
-            println!("debug messenger destroyed");
-        }
+        self.debug_layer = None;
         unsafe { self.instance.destroy_instance(None) }
-        println!("instance destroyed");
     }
 }
 

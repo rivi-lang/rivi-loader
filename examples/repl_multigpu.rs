@@ -1,5 +1,5 @@
-use rivi_loader::debug_layer::DebugOption;
-use rivi_loader::spirv::SPIRV;
+use rivi_loader::{debug_layer::DebugOption, shader::Shader};
+
 
 fn main() {
 
@@ -29,18 +29,12 @@ fn main() {
         println!("Device {}\n{:?}", idx+1, c);
 
         let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
-        let spirv = SPIRV::new(&mut cursor).unwrap();
+        let shader = Shader::new(c, &mut cursor).unwrap();
 
         let chunk = input.get(idx).unwrap();
         let cores = &c.fences[0..1];
 
-        let res = c.execute(
-          chunk,
-          2,
-          &spirv,
-          cores,
-        );
-
+        let res = c.execute(chunk, 2, &shader, cores);
         res.to_vec()
 
       })
@@ -49,9 +43,7 @@ fn main() {
     joined
       .iter()
       .enumerate()
-      .for_each(|(idx, res)| {
-        println!("Result of GPU {}: {:?}", idx+1, res);
-      });
+      .for_each(|(idx, res)| println!("Result of GPU {}: {:?}", idx+1, res));
 
     let expected_output: Vec<f32> = vec![4.0, 6.0, 2.0, 4.0];
     let flat_joined = joined.into_iter().flatten().collect::<Vec<_>>();

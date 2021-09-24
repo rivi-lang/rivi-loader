@@ -1,4 +1,4 @@
-use std::{error::Error, ffi::CString, sync::Mutex};
+use std::{error::Error, ffi::CString, sync::{RwLock}};
 
 use ash::{version::{InstanceV1_0, InstanceV1_1}, vk};
 use gpu_allocator::{VulkanAllocator, VulkanAllocatorCreateDesc};
@@ -147,7 +147,7 @@ impl GPU {
             })
             .collect::<Vec<Fence>>();
 
-        Ok(Compute{ device, allocator: Mutex::new(allocator), fences, memory })
+        Ok(Compute{ device, allocator: Some(RwLock::new(allocator)), fences, memory })
     }
 
 }
