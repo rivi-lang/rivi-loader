@@ -6,7 +6,7 @@ use gpu_allocator::{MemoryLocation, vulkan::*};
 
 pub struct Buffer<'a, 'b>  {
     pub buffer: vk::Buffer,
-    pub allocation: SubAllocation,
+    pub allocation: Allocation,
     pub device_size: vk::DeviceSize,
 
     device: &'a ash::Device,

@@ -122,7 +122,7 @@ impl GPU {
 
         let device = instance.create_device(self.physical, &device_info, None)?;
 
-        let allocator_create_info = Allocator {
+        let allocator_create_info = AllocatorCreateDesc {
             physical_device: self.physical,
             device: device.clone(),
             instance: instance.clone(),
@@ -130,7 +130,7 @@ impl GPU {
             buffer_device_address: false,
         };
 
-        let allocator = Allocator::new(&allocator_create_info);
+        let allocator = Allocator::new(&allocator_create_info)?;
 
         let fences = queue_infos
             .iter()
