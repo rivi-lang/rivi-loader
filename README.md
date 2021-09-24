@@ -2,6 +2,33 @@
 
 rivi-loader is a Vulkan-based program loader for GPGPU applications. It builds on the Rust-based Vulkan wrapper [ash](https://github.com/MaikKlein/ash). The project is a part of research agenda of interoperable GPU computing, that is, an effort to evaluate how Vulkan could be utilized to replace GLSL and CUDA accelerated programs with Vulkan.
 
+## Example
+
+```Rust
+fn main() {
+    let a = vec![1.0, 2.0];
+    let b = vec![3.0, 4.0];
+    let input = &vec![vec![a, b]];
+    let expected_output = vec![4.0, 6.0];
+    let out_length = expected_output.len();
+
+    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
+    println!("Found {} compute device(s)", devices.len());
+    println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
+
+    let compute = devices.first().unwrap();
+    let cores = &compute.fences[0..1];
+
+    let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
+    let shader = Shader::new(compute, &mut cursor).unwrap();
+
+    let result = compute.execute(input, out_length, &shader, cores);
+
+    println!("Result: {:?}", result);
+    assert_eq!(result, expected_output);
+}
+```
+
 The project aims to highlight performance optimizations available by using Vulkan with hand-written SPIR-V code. Various recent features of Vulkan, such as variable storage buffer pointers, dedicated memory allocations, subgroup operations, and asynchronous queue family usage are all relevant parts of the effort.
 
 Thanks to Vulkan, the example programs run on both discrete and integrated graphics cards and across various operating systems. Testing on discrete cards has primarily been done on Windows 10 and Linux (Arch and Ubuntu LTS using proprietary drivers) using AMD and Nvidia cards, with both AMD and Intel CPUs on computers with single and multiple GPUs. Integrated cards that have been tested include Apple M1, Raspberry Pi 4, and Nvidia Jetson TX2.
@@ -10,21 +37,16 @@ The project is aimed as an example repository from which motivated people can us
 
 ## Features
 
-- millisecond-scale cold-start times of GPGPU programs
-- use of multiple queue families by subslicing output buffer into fragments
-- per device program loading to target Kubernetes-based scheduling
+- lifetime management for Vulkan resources
+- GPU resources exposed as "cores" (queue family) and "threads" (queues) for per-application performance granularity
 - interoperable platform support across operating systems and graphics cards
 
-## Limitations
+## Current limitations (to be addressed)
 
 - output buffer dimensions have to be statically known and oftentimes hand-written, no type inference is given at the moment
-- work submission must be based on the factor of queue family counts: e.g. you can submit 10 items in parallel to most discrete cards since the queue family count is 2, but for integrated cards like Apple M1 the factor is 4 thus you would need to send either 8 or 12 items (though, the amount of queue family count is outputted in debug messages) -- uneven work submission in part of future work
-- memory limitations are not endorsed, which means **you may run out of memory and hang your computer** if you submit too much work or even run the `rf` example
-- **there are no safety guarantees, running any of the programs can hang your computer and require force restart -- save your work before running any of the examples!**
+- memory limitations are not endorsed, which means **you may run out of memory and hang your computer**
 
 ## Installation
-
-Please read the warnings above, and decide whether to proceed.
 
 1. Make sure Rust is installed, if not, consider [rustup](https://rustup.rs/)
 2. Make sure Vulkan is installed, if not, consider [LunarG](https://vulkan.lunarg.com/sdk/home) and the installation instructions found on [ash](https://github.com/MaikKlein/ash#example)
