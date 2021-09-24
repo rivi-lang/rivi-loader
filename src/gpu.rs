@@ -1,7 +1,7 @@
 use std::{error::Error, ffi::CString, sync::{RwLock}};
 
-use ash::{version::{InstanceV1_0, InstanceV1_1}, vk};
-use gpu_allocator::{VulkanAllocator, VulkanAllocatorCreateDesc};
+use ash::vk;
+use gpu_allocator::vulkan::*;
 
 use crate::{Compute, fence::Fence};
 
@@ -122,7 +122,7 @@ impl GPU {
 
         let device = instance.create_device(self.physical, &device_info, None)?;
 
-        let allocator_create_info = VulkanAllocatorCreateDesc {
+        let allocator_create_info = Allocator {
             physical_device: self.physical,
             device: device.clone(),
             instance: instance.clone(),
@@ -130,7 +130,7 @@ impl GPU {
             buffer_device_address: false,
         };
 
-        let allocator = VulkanAllocator::new(&allocator_create_info);
+        let allocator = Allocator::new(&allocator_create_info);
 
         let fences = queue_infos
             .iter()

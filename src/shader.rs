@@ -1,6 +1,6 @@
 use std::{error::Error, ffi::CString, io};
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 
 use crate::compute::Compute;
 

@@ -1,7 +1,7 @@
 use std::{convert::TryInto, fmt, slice, sync::RwLock};
 
-use ash::{version::DeviceV1_0, vk::{self, PhysicalDeviceMemoryProperties}};
-use gpu_allocator::MemoryLocation;
+use ash::vk::*;
+use gpu_allocator::{MemoryLocation, vulkan::*};
 use rayon::prelude::*;
 
 use crate::{buffer::Buffer, command::Command, fence::Fence, shader::Shader};
@@ -11,7 +11,7 @@ const STRIDE: usize = std::mem::size_of::<f32>() as usize;
 
 pub struct Compute {
     pub device: ash::Device,
-    pub allocator: Option<RwLock<gpu_allocator::VulkanAllocator>>,
+    pub allocator: Option<RwLock<Allocator>>,
     pub fences: Vec<Fence>,
 
     pub(crate) memory: PhysicalDeviceMemoryProperties,
@@ -71,7 +71,7 @@ impl Compute {
                     &self.device,
                     &self.allocator,
                     (input.len() * STRIDE) as u64,
-                    vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
+                    BufferUsageFlags::TRANSFER_DST | BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::STORAGE_BUFFER,
                     MemoryLocation::CpuToGpu,
                     queue,
                 ).unwrap();
@@ -101,7 +101,7 @@ impl Compute {
             .map(|(index, command_buffer)| {
 
                 let index_offset = (command.command_buffers.len() as u32 * fence_idx + index as u32) as usize;
-                let cpu_offset: vk::DeviceSize = (cpu_buffer.device_size / max_sets as u64) * index_offset as u64;
+                let cpu_offset: DeviceSize = (cpu_buffer.device_size / max_sets as u64) * index_offset as u64;
                 let cpu_chunk_size = cpu_buffer.device_size / max_sets as u64;
 
                 let cpu_buffers = self.create_cpu_inputs(queue_family_indices, &input[index_offset]);
@@ -109,18 +109,18 @@ impl Compute {
                 let buffer_infos = (0..=cpu_buffers.len())
                     .into_iter()
                     .map(|f| match f {
-                        0 => [vk::DescriptorBufferInfo::builder()
+                        0 => [DescriptorBufferInfo::builder()
                             .buffer(cpu_buffer.buffer)
                             .offset(cpu_offset)
                             .range(cpu_chunk_size)
                             .build()],
-                        _ => [vk::DescriptorBufferInfo::builder()
+                        _ => [DescriptorBufferInfo::builder()
                             .buffer(cpu_buffers.get(f-1).unwrap().buffer)
                             .offset(0)
-                            .range(vk::WHOLE_SIZE)
+                            .range(WHOLE_SIZE)
                             .build()],
                     })
-                    .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
+                    .collect::<Vec<[DescriptorBufferInfo; 1]>>();
 
                 let ds = command.descriptor_sets
                     .get(index as usize)
@@ -131,18 +131,18 @@ impl Compute {
                     .iter()
                     .enumerate()
                     .map(|(index, buf)| {
-                        vk::WriteDescriptorSet::builder()
+                        WriteDescriptorSet::builder()
                             .dst_set(ds)
                             .dst_binding(index.try_into().unwrap())
-                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .descriptor_type(DescriptorType::STORAGE_BUFFER)
                             .buffer_info(buf)
                             .build()
                     })
-                    .collect::<Vec<vk::WriteDescriptorSet>>();
+                    .collect::<Vec<WriteDescriptorSet>>();
 
                 unsafe {
                     self.device.update_descriptor_sets(&wds, &[]);
-                    self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
+                    self.device.begin_command_buffer(*command_buffer, &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
                 };
 
                 cpu_buffers.iter().for_each(|cpu|
@@ -151,7 +151,7 @@ impl Compute {
                             *command_buffer,
                             cpu.buffer,
                             cpu.buffer,
-                            &[vk::BufferCopy::builder()
+                            &[BufferCopy::builder()
                                 .src_offset(0)
                                 .dst_offset(0)
                                 .size(cpu.device_size)
@@ -162,15 +162,15 @@ impl Compute {
                 );
 
                 unsafe {
-                    self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, func.pipeline);
-                    self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, func.pipeline_layout, 0, &[ds], &[]);
+                    self.device.cmd_bind_pipeline(*command_buffer, PipelineBindPoint::COMPUTE, func.pipeline);
+                    self.device.cmd_bind_descriptor_sets(*command_buffer, PipelineBindPoint::COMPUTE, func.pipeline_layout, 0, &[ds], &[]);
                     self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
 
                     self.device.cmd_copy_buffer(
                         *command_buffer,
                         cpu_buffer.buffer,
                         cpu_buffer.buffer,
-                        &[vk::BufferCopy::builder()
+                        &[BufferCopy::builder()
                             .src_offset(cpu_offset)
                             .dst_offset(cpu_offset)
                             .size(cpu_chunk_size)
@@ -204,7 +204,7 @@ impl Compute {
             &self.device,
             &self.allocator,
             size_in_bytes.try_into().unwrap(),
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
+            BufferUsageFlags::TRANSFER_DST | BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::STORAGE_BUFFER,
             MemoryLocation::CpuToGpu,
             &queue_family_indices,
         ).unwrap();

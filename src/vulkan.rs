@@ -1,6 +1,6 @@
 use std::{borrow::BorrowMut, error::Error};
 
-use ash::{Entry, extensions::ext::DebugUtils, version::{EntryV1_0, InstanceV1_0}, vk};
+use ash::{Entry, extensions::ext::DebugUtils, vk};
 
 use crate::{compute::Compute, debug_layer::{DebugLayer, DebugOption}, gpu::GPU};
 
@@ -33,7 +33,7 @@ impl Vulkan {
             .create_instance(&vk::InstanceCreateInfo::builder()
                 .push_next(info.borrow_mut())
                 .application_info(&vk::ApplicationInfo {
-                    api_version: vk::make_version(1, 2, 0),
+                    api_version: vk::make_api_version(0, 1, 2, 0),
                     engine_version: 0,
                     ..Default::default()
                 })
@@ -41,9 +41,8 @@ impl Vulkan {
                 .enabled_extension_names(&[DebugUtils::name().as_ptr()])
             , None)? };
 
-        println!("Instance created");
         match _entry.try_enumerate_instance_version()? {
-            Some(v) => println!("Using Vulkan {}.{}.{}", vk::version_major(v), vk::version_minor(v), vk::version_patch(v)),
+            Some(v) => println!("Using Vulkan {}.{}.{}", vk::api_version_major(v), vk::api_version_minor(v), vk::api_version_patch(v)),
             None => println!("Using Vulkan 1.0"),
         };
 

@@ -1,23 +1,23 @@
-use std::{error::Error, sync::{RwLock}};
+use std::{error::Error, sync::RwLock};
 
-use ash::{version::DeviceV1_0, vk};
-use gpu_allocator::{AllocationCreateDesc, MemoryLocation, VulkanAllocator};
+use ash::vk;
+use gpu_allocator::{MemoryLocation, vulkan::*};
 
 
 pub struct Buffer<'a, 'b>  {
     pub buffer: vk::Buffer,
-    pub allocation: gpu_allocator::SubAllocation,
+    pub allocation: SubAllocation,
     pub device_size: vk::DeviceSize,
 
     device: &'a ash::Device,
-    allocator: &'b Option<RwLock<gpu_allocator::VulkanAllocator>>,
+    allocator: &'b Option<RwLock<Allocator>>,
 }
 
 impl <'a, 'b> Buffer<'_, '_> {
 
     pub fn new(
         device: &'a ash::Device,
-        allocator: &'b Option<RwLock<VulkanAllocator>>,
+        allocator: &'b Option<RwLock<Allocator>>,
         device_size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         memory_usage: MemoryLocation,
