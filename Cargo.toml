@@ -18,7 +18,7 @@ exclude = [
 
 [dependencies]
 ash = "0.33.3"
-gpu-allocator = { git = "https://github.com/jhvst/gpu-allocator", features = ["vulkan"] }
+gpu-allocator = { git = "https://github.com/Traverse-Research/gpu-allocator" }
 rayon = "1.5.1"
 rspirv = "0.10.0"
 
