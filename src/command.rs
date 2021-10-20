@@ -64,13 +64,11 @@ impl <'a> Command<'_> {
             .descriptor_pool(descriptor_pool)
             .set_layouts(set_layouts);
 
-        let descriptor_sets = (0..command_buffer_count)
-            .into_iter()
-            .filter_map(|_| match unsafe { device.allocate_descriptor_sets(&descriptor_set_info) } {
-                Ok(ds) => Some(ds[0]),
-                Err(_) => None,
-            })
-            .collect();
+        let mut descriptor_sets = vec![];
+        for _ in 0..command_buffer_count {
+            let sets = unsafe { device.allocate_descriptor_sets(&descriptor_set_info) }?;
+            descriptor_sets.push(sets[0]);
+        }
 
         let command_pool = Command::command_pool(device, queue_family_index)?;
         let command_buffers = Command::allocate_command_buffers(device, command_pool, command_buffer_count)?;
