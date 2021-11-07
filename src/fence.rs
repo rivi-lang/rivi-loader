@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 
 
 pub struct Fence {
