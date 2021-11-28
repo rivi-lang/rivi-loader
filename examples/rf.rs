@@ -1,10 +1,8 @@
 use std::{error::Error, time::Instant};
 
-use rivi_loader::debug_layer::DebugOption;
-use rivi_loader::shader::Shader;
+use rivi_loader::{DebugOption, Shader};
 
-
-const NUM: i32 = 32;
+const NUM: i32 = 4;
 
 fn main() {
 
@@ -24,8 +22,8 @@ fn main() {
     let shader = Shader::new(compute, &mut cursor).unwrap();
 
     let run_timer = Instant::now();
-    for x in 0..5 {
-        let _result = compute.execute(&input, 1146024, &shader, cores);
+    for x in 0..32 {
+        let _result = compute.execute(&input, 1_146_024, &shader, cores);
         println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
         //dbg!((_result.iter().sum::<f32>() - 490058.0*NUM as f32).abs() < 0.1);
     }

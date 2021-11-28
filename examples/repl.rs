@@ -1,11 +1,10 @@
-use rivi_loader::{debug_layer::DebugOption, shader::Shader};
-
+use rivi_loader::{DebugOption, Shader};
 
 fn main() {
-    let a = vec![1.0, 2.0];
-    let b = vec![3.0, 4.0];
+    let a: Vec<f32> = vec![1.0, 2.0];
+    let b: Vec<f32> = vec![3.0, 4.0];
     let input = &vec![vec![a, b]];
-    let expected_output = vec![4.0, 6.0];
+    let expected_output: Vec<f32> = vec![4.0, 6.0];
     let out_length = expected_output.len();
 
     let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();

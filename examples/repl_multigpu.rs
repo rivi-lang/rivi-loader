@@ -1,5 +1,4 @@
-use rivi_loader::{debug_layer::DebugOption, shader::Shader};
-
+use rivi_loader::{DebugOption, Shader};
 
 fn main() {
 
@@ -7,11 +6,11 @@ fn main() {
     println!("Total number of compute device(s): {}", devices.len());
     assert_eq!(devices.len(), 2);
 
-    let a = vec![1.0, 2.0];
-    let b = vec![3.0, 4.0];
+    let a: Vec<f32> = vec![1.0, 2.0];
+    let b: Vec<f32> = vec![3.0, 4.0];
 
-    let c = vec![1.0, 2.0];
-    let d = vec![1.0, 2.0];
+    let c: Vec<f32> = vec![1.0, 2.0];
+    let d: Vec<f32> = vec![1.0, 2.0];
 
     let input = vec![
       // gpu split
