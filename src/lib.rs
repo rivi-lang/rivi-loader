@@ -29,7 +29,7 @@ pub fn new(
     let pdevices = unsafe { vk.instance.enumerate_physical_devices()? };
     let logical_devices = pdevices
         .into_iter()
-        .filter_map(|pdevice| {
+        .map(|pdevice| {
 
             println!("Found device: {}", vk.device_name(pdevice));
 
@@ -40,11 +40,19 @@ pub fn new(
 
             let queue_infos = unsafe { vk.queue_infos(pdevice) };
 
-            match vk.compute(pdevice, &queue_infos) {
-                Ok(c) => Some(c),
-                Err(_) => None,
-            }
+            let device = vk.create_device(pdevice, &queue_infos)?;
+
+            let fences = vk.create_fences(&device, &queue_infos)?;
+
+            let allocator = vk.create_allocator(pdevice, &device)?;
+
+            let memory = unsafe { vk.instance.get_physical_device_memory_properties(pdevice) };
+
+            Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
+
         })
+        .collect::<Result<Vec<Compute>, Box<dyn Error>>>()?
+        .into_iter()
         .filter(|c| !c.fences.is_empty())
         .collect::<Vec<Compute>>();
 
@@ -181,17 +189,33 @@ impl Vulkan {
         sp.build()
     }
 
-    fn compute(
+    fn create_fences(
+        &self,
+        device: &ash::Device,
+        queue_infos: &[vk::DeviceQueueCreateInfo]
+    ) -> Result<Vec<Fence>, Box<dyn Error>> {
+        Ok(queue_infos.iter().flat_map(|info| {
+            (0..info.queue_count).into_iter().map(|queue_index| {
+                let vk_fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
+                let present_queue = unsafe { device.get_device_queue(info.queue_family_index, queue_index) };
+                Ok(Fence{ fence: vk_fence, present_queue, phy_index: info.queue_family_index })
+            })
+            .collect::<Result<Vec<Fence>, Box<dyn Error>>>()
+            .into_iter()
+            .flatten()
+        })
+        .into_iter()
+        .collect())
+    }
+
+    fn create_device(
         &self,
         pdevice: vk::PhysicalDevice,
         queue_infos: &[vk::DeviceQueueCreateInfo],
-    ) -> Result<Compute, Box<dyn Error>> {
-
+    ) -> Result<ash::Device, Box<dyn Error>> {
         let features = vk::PhysicalDeviceFeatures {
             ..Default::default()
         };
-
-        let memory = unsafe { self.instance.get_physical_device_memory_properties(pdevice) };
 
         let mut variable_pointers = vk::PhysicalDeviceVariablePointersFeatures::builder()
             .variable_pointers(true)
@@ -214,35 +238,23 @@ impl Vulkan {
             .enabled_features(&features)
             .push_next(&mut variable_pointers);
 
-        let device = unsafe { self.instance.create_device(pdevice, &device_info, None)? };
+        unsafe { Ok(self.instance.create_device(pdevice, &device_info, None)?) }
+    }
 
-        let allocator_create_info = AllocatorCreateDesc {
+    fn create_allocator(
+        &self,
+        pdevice: vk::PhysicalDevice,
+        device: &ash::Device,
+    ) -> Result<Allocator, Box<dyn Error>> {
+        Ok(Allocator::new(&AllocatorCreateDesc {
             physical_device: pdevice,
             device: device.clone(),
             instance: self.instance.clone(),
             debug_settings: Default::default(),
             buffer_device_address: false,
-        };
-
-        let allocator = Allocator::new(&allocator_create_info)?;
-
-        let fences = queue_infos
-            .iter()
-            .flat_map(|queue_info| {
-                (0..queue_info.queue_count)
-                    .into_iter()
-                    .filter_map(|queue_index| {
-                        match Fence::new(&device, queue_info.queue_family_index, queue_index) {
-                            Ok(f) => Some(f),
-                            Err(_) => None,
-                        }
-                    })
-                    .collect::<Vec<Fence>>()
-            })
-            .collect::<Vec<Fence>>();
-
-        Ok(Compute{ device, allocator: Some(RwLock::new(allocator)), fences, memory })
+        })?)
     }
+
 }
 
 impl Drop for Vulkan {
@@ -313,29 +325,26 @@ impl <'a> Shader<'_> {
     fn binding_count(
         module: &rspirv::dr::Module
     ) -> Result<usize, Box<dyn Error>> {
-        let binding_count = module
+        Ok(module
             .annotations
             .iter()
             .flat_map(|f| f.operands.clone())
             .filter(|op| op.eq(&rspirv::dr::Operand::Decoration(rspirv::spirv::Decoration::Binding)))
-            .count();
-        Ok(binding_count)
+            .count())
     }
 
     fn descriptor_set_layout_bindings(
         binding_count: usize
     ) -> Vec<vk::DescriptorSetLayoutBinding> {
-        (0..binding_count)
-            .into_iter()
-            .map(|i|
-                vk::DescriptorSetLayoutBinding::builder()
-                    .binding(i as u32)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                    .build()
-            )
-            .collect::<Vec<vk::DescriptorSetLayoutBinding>>()
+        (0..binding_count).into_iter().map(|i|
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(i as u32)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .build()
+        )
+        .collect()
     }
 
     pub fn create(
@@ -418,31 +427,7 @@ impl <'a> Drop for Shader<'a> {
 pub struct Fence {
     pub fence: vk::Fence,
     pub present_queue: vk::Queue,
-    pub phy_index: usize,
-}
-
-impl Fence {
-
-    pub fn new(
-        device: &ash::Device,
-        queue_family_index: u32,
-        queue_index: u32
-    ) -> Result<Fence, Box<dyn Error>> {
-        let fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
-        let present_queue = unsafe { device.get_device_queue(queue_family_index, queue_index) };
-        Ok(Fence{fence, present_queue, phy_index: queue_family_index as usize})
-    }
-
-    pub fn submit(
-        &self,
-        device: &ash::Device,
-        command_buffers: &[vk::CommandBuffer]
-    ) -> Result<(), Box<dyn Error>> {
-        let info = [vk::SubmitInfo::builder().command_buffers(command_buffers).build()];
-        let result = unsafe { device.queue_submit(self.present_queue, &info, self.fence)? };
-        Ok(result)
-    }
-
+    pub phy_index: u32,
 }
 
 pub struct Compute {
@@ -478,7 +463,7 @@ impl fmt::Debug for Compute {
 
         let qfs = self.fences.iter().map(|f| f.phy_index);
 
-        let mut uniqs: Vec<usize> = Vec::new();
+        let mut uniqs: Vec<u32> = Vec::new();
         qfs.into_iter().for_each(|f|
             if !uniqs.contains(&f) {
                 uniqs.push(f);
@@ -493,23 +478,21 @@ impl Compute {
 
     fn create_cpu_inputs<T>(
         &self,
-        queue: &[u32],
+        queue_family_indices: &[u32],
         inputs: &[Vec<T>]
-    ) -> Vec<Buffer> {
-        inputs.iter().map(|input| {
-            let buffer = Buffer::new(
+    ) -> Result<Vec<Buffer>, Box<dyn Error>> {
+        inputs.iter().map(|data| {
+            Buffer::new(
                 &self.device,
                 &self.allocator,
-                (input.len() * std::mem::size_of::<T>()) as u64,
+                (data.len() * std::mem::size_of::<T>()) as u64,
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
                 gpu_allocator::MemoryLocation::CpuToGpu,
-                queue,
-            ).unwrap();
-
-            buffer.fill(input).unwrap();
-
-            buffer
-
+                queue_family_indices,
+            ).and_then(|buffer| {
+                buffer.fill(data)?;
+                Ok(buffer)
+            })
         })
         .collect()
     }
@@ -522,13 +505,13 @@ impl Compute {
         cpu_buffer: &Buffer<'_, '_>,
         input: &[Vec<Vec<T>>],
         memory_mappings: Vec<(usize, vk::DeviceSize, vk::DeviceSize)>,
-    ) -> Vec<Vec<Buffer>> {
+    ) -> Result<Vec<Vec<Buffer>>, Box<dyn Error>> {
 
-        command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
+        Ok(command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
 
             let ds = command.descriptor_sets[index];
             let (index_offset, cpu_offset, cpu_chunk_size) = memory_mappings[index];
-            let cpu_buffers = self.create_cpu_inputs(queue_family_indices, &input[index_offset]);
+            let cpu_buffers = self.create_cpu_inputs(queue_family_indices, &input[index_offset])?;
 
             let buffer_infos = (0..=cpu_buffers.len()).into_iter()
                 .map(|f| match f {
@@ -546,19 +529,19 @@ impl Compute {
                 .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
 
             let wds = buffer_infos.iter().enumerate()
-                .map(|(index, buf)|
+                .map(|(index, buf)| {
                     vk::WriteDescriptorSet::builder()
                         .dst_set(ds)
                         .dst_binding(index as u32)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(buf)
                         .build()
-                )
+                })
                 .collect::<Vec<vk::WriteDescriptorSet>>();
 
             unsafe {
                 self.device.update_descriptor_sets(&wds, &[]);
-                self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
+                self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
             };
 
             cpu_buffers.iter().for_each(|cpu|
@@ -593,13 +576,14 @@ impl Compute {
                         .build()
                     ],
                 );
-                self.device.end_command_buffer(*command_buffer).unwrap();
+                self.device.end_command_buffer(*command_buffer)?;
             }
 
-            cpu_buffers
+            Ok(cpu_buffers)
 
         })
-        .collect::<Vec<Vec<Buffer>>>()
+        .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error>>>()
+        .into_iter().flatten().collect())
     }
 
     pub fn execute<T: std::marker::Sync>(
@@ -607,10 +591,11 @@ impl Compute {
         input: &[Vec<Vec<T>>],
         out_length: usize,
         shader: &Shader,
-        fences: &[Fence]
-    ) -> &[T] {
+    ) -> Result<&[T], Box<dyn Error>> {
 
-        let queue_family_indices = fences
+        let threads = &self.fences[0..input.len()];
+
+        let queue_family_indices = threads
             .iter()
             .map(|f| f.phy_index as u32)
             .collect::<Vec<u32>>();
@@ -623,18 +608,18 @@ impl Compute {
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
             gpu_allocator::MemoryLocation::CpuToGpu,
             &queue_family_indices,
-        ).unwrap();
+        )?;
 
-        fences.par_iter().enumerate().for_each(|(fence_idx, fence)| {
+        let executions = threads.par_iter().enumerate().map(|(fence_idx, fence)| {
 
             let command = Command::new(
                 fence.phy_index as u32,
                 shader.binding_count as u32,
                 input.len() as u32,
                 &shader.set_layouts,
-                (input.len() / fences.len()) as u32,
+                (input.len() / threads.len()) as u32,
                 &self.device,
-            ).unwrap();
+            )?;
 
             let max_sets = input.len() as vk::DeviceSize;
 
@@ -658,16 +643,28 @@ impl Compute {
                 memory_mappings,
             );
 
-            fence.submit(&self.device, &command.command_buffers).unwrap();
+            let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
             unsafe {
-                self.device.wait_for_fences(&[fence.fence], true, std::u64::MAX).unwrap();
-                self.device.reset_fences(&[fence.fence]).unwrap();
+                self.device.queue_submit(fence.present_queue, &submits, fence.fence)?;
+                self.device.wait_for_fences(&[fence.fence], true, std::u64::MAX)?;
+                self.device.reset_fences(&[fence.fence])?;
             }
 
-        });
+            Ok(())
 
-        let mapping = cpu_buffer.allocation.mapped_ptr().unwrap().as_ptr();
-        unsafe { std::slice::from_raw_parts::<T>(mapping as *const T, out_length * input.len()) }
+        })
+        .collect::<Result<(), Box<dyn Error + Send + Sync>>>();
+
+        match executions {
+            Ok(_) => {
+                let mapping = match cpu_buffer.allocation.mapped_ptr() {
+                    Some(c_ptr) => c_ptr.as_ptr() as *const T,
+                    None => return Err("could not map output buffer".to_string().into()),
+                };
+                unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len())) }
+            },
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -699,7 +696,7 @@ impl <'a> Command<'_> {
         device: &ash::Device,
         descriptor_count: u32,
         max_sets: u32,
-    ) -> Result<vk::DescriptorPool, Box<dyn Error>> {
+    ) -> Result<vk::DescriptorPool, Box<dyn Error + Send + Sync>> {
         let descriptor_pool_size = [vk::DescriptorPoolSize::builder()
             .ty(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(descriptor_count)
@@ -713,7 +710,7 @@ impl <'a> Command<'_> {
     fn command_pool(
         device: &ash::Device,
         queue_family_index: u32,
-    ) -> Result<vk::CommandPool, Box<dyn Error>> {
+    ) -> Result<vk::CommandPool, Box<dyn Error + Send + Sync>> {
         let command_pool_info = vk::CommandPoolCreateInfo::builder()
             .queue_family_index(queue_family_index);
         unsafe { Ok(device.create_command_pool(&command_pool_info, None)?) }
@@ -723,7 +720,7 @@ impl <'a> Command<'_> {
         device: &ash::Device,
         command_pool: vk::CommandPool,
         command_buffer_count: u32,
-    ) -> Result<Vec<vk::CommandBuffer>, Box<dyn Error>> {
+    ) -> Result<Vec<vk::CommandBuffer>, Box<dyn Error + Send + Sync>> {
         let command_buffers_info = vk::CommandBufferAllocateInfo::builder()
             .command_buffer_count(command_buffer_count)
             .command_pool(command_pool);
@@ -737,7 +734,7 @@ impl <'a> Command<'_> {
         set_layouts: &[vk::DescriptorSetLayout],
         command_buffer_count: u32,
         device: &'a ash::Device,
-    ) -> Result<Command<'a>, Box<dyn Error>> {
+    ) -> Result<Command<'a>, Box<dyn Error + Send + Sync>> {
 
         let descriptor_pool = Command::descriptor_pool(device, descriptor_count, max_sets)?;
 
@@ -745,11 +742,9 @@ impl <'a> Command<'_> {
             .descriptor_pool(descriptor_pool)
             .set_layouts(set_layouts);
 
-        let mut descriptor_sets = vec![];
-        for _ in 0..command_buffer_count {
-            let sets = unsafe { device.allocate_descriptor_sets(&descriptor_set_info) }?;
-            descriptor_sets.push(sets[0]);
-        }
+        let descriptor_sets = (0..command_buffer_count).into_iter().flat_map(|_| {
+            unsafe { device.allocate_descriptor_sets(&descriptor_set_info) }.map(|sets| sets[0])
+        }).collect();
 
         let command_pool = Command::command_pool(device, queue_family_index)?;
         let command_buffers = Command::allocate_command_buffers(device, command_pool, command_buffer_count)?;

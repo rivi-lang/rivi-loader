@@ -16,14 +16,13 @@ fn main() {
     assert_eq!(NUM % devices.iter().map(|f| f.fences.len()).sum::<usize>() as i32, 0);
 
     let compute = devices.first().unwrap();
-    let cores = &compute.fences;
 
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
     let shader = Shader::new(compute, &mut cursor).unwrap();
 
     let run_timer = Instant::now();
     for x in 0..32 {
-        let _result = compute.execute(&input, 1_146_024, &shader, cores);
+        let _result = compute.execute(&input, 1_146_024, &shader).unwrap();
         println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
         //dbg!((_result.iter().sum::<f32>() - 490058.0*NUM as f32).abs() < 0.1);
     }

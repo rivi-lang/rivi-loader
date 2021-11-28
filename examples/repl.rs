@@ -12,12 +12,11 @@ fn main() {
     println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
 
     let compute = devices.first().unwrap();
-    let cores = &compute.fences[0..1];
 
     let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
     let shader = Shader::new(compute, &mut cursor).unwrap();
 
-    let result = compute.execute(input, out_length, &shader, cores);
+    let result = compute.execute(input, out_length, &shader).unwrap();
 
     println!("Result: {:?}", result);
     assert_eq!(result, expected_output);

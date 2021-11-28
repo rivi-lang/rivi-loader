@@ -31,9 +31,8 @@ fn main() {
         let shader = Shader::new(c, &mut cursor).unwrap();
 
         let chunk = input.get(idx).unwrap();
-        let cores = &c.fences[0..1];
 
-        let res = c.execute(chunk, 2, &shader, cores);
+        let res = c.execute(chunk, 2, &shader).unwrap();
         res.to_vec()
 
       })
