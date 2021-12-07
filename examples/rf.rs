@@ -2,29 +2,39 @@ use std::{error::Error, time::Instant};
 
 use rivi_loader::{DebugOption, Shader};
 
-const NUM: i32 = 4;
-
+/// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
+/// The implementation of this algorithm was derived from Python/Cython to APL, and
+/// then hand-translated from APL to SPIR-V.
+///
+/// The baseline used 150 iterations of the prediction. This file replicates
+/// that functionality by load-balancing it among all fences found.
+///
+/// The whole ordeal is further elaborated here: https://hal.inria.fr/hal-03155647/
 fn main() {
 
-    let input = load_input();
-
+    // initialize vulkan process
     let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
     println!("Found {} compute device(s)", devices.len());
-    println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
+    let cores = devices.iter().map(|f| f.fences.len()).sum::<usize>();
+    println!("Found {} core(s)", cores);
 
-    // ensure the work is evenly split among cores
-    assert_eq!(NUM % devices.iter().map(|f| f.fences.len()).sum::<usize>() as i32, 0);
+    // replicate work among cores
+    let input = load_input(cores);
 
+    // bind shader to a compute device
     let compute = devices.first().unwrap();
-
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
     let shader = Shader::new(compute, &mut cursor).unwrap();
 
+    // create upper bound for iterations
+    let bound = (150.0 / cores as f32).ceil() as i32;
+
     let run_timer = Instant::now();
-    for x in 0..32 {
+    for x in 0..bound {
         let _result = compute.execute(&input, 1_146_024, &shader).unwrap();
         println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
-        //dbg!((_result.iter().sum::<f32>() - 490058.0*NUM as f32).abs() < 0.1);
+        // to check the results below against precomputed answer (slow)
+        //dbg!((_result.iter().sum::<f32>() - 490058.0*cores as f32).abs() < 0.1);
     }
     println!("App executions {}ms", run_timer.elapsed().as_millis());
 }
@@ -43,7 +53,7 @@ fn csv(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn load_input() -> Vec<Vec<Vec<f32>>> {
+fn load_input(chunks: usize) -> Vec<Vec<Vec<f32>>> {
 
     let mut feature: Vec<f32> = Vec::new();
     if let Err(err) = csv("examples/rf/dataset/feature.csv", &mut feature) {
@@ -75,7 +85,7 @@ fn load_input() -> Vec<Vec<Vec<f32>>> {
         panic!("error running example: {}", err);
     }
 
-    (0..NUM).into_iter().map(|_| vec![
+    (0..chunks).into_iter().map(|_| vec![
         left.clone(),
         right.clone(),
         th.clone(),
