@@ -18,7 +18,7 @@ exclude = [
 
 [dependencies]
 ash = "0.33.3"
-gpu-allocator = "0.10.0"
+gpu-allocator = "0.11.0"
 rayon = "1.5.1"
 rspirv = "0.11.0"
 
