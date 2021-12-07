@@ -324,13 +324,11 @@ impl <'a> Shader<'_> {
 
     fn binding_count(
         module: &rspirv::dr::Module
-    ) -> Result<usize, Box<dyn Error>> {
-        Ok(module
-            .annotations
-            .iter()
+    ) -> usize {
+        module.annotations.iter()
             .flat_map(|f| f.operands.clone())
             .filter(|op| op.eq(&rspirv::dr::Operand::Decoration(rspirv::spirv::Decoration::Binding)))
-            .count())
+            .count()
     }
 
     fn descriptor_set_layout_bindings(
@@ -402,7 +400,7 @@ impl <'a> Shader<'_> {
     ) -> Result<Shader<'a>, Box<dyn Error>> {
         let binary = ash::util::read_spv(x)?;
         let module = Shader::module(&binary)?;
-        let binding_count = Shader::binding_count(&module)?;
+        let binding_count = Shader::binding_count(&module);
         let bindings = Shader::descriptor_set_layout_bindings(binding_count);
         let shader = Shader::create(&compute.device, &bindings, &binary)?;
         Ok(shader)
@@ -442,9 +440,7 @@ impl fmt::Debug for Compute {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 
         println!("Memory types: {}", self.memory.memory_type_count);
-        self.memory
-            .memory_types
-            .iter()
+        self.memory.memory_types.iter()
             .filter(|mt| !mt.property_flags.is_empty())
             .enumerate()
             .for_each(|(idx, mt)| {
@@ -452,23 +448,20 @@ impl fmt::Debug for Compute {
             });
 
         println!("Memory heaps: {}", self.memory.memory_heap_count);
-        self.memory
-            .memory_heaps
-            .iter()
+        self.memory.memory_heaps.iter()
             .filter(|mh| mh.size.ne(&0))
             .enumerate()
             .for_each(|(idx, mh)| {
                 println!("{:?} GiB {:?} (heap {})", mh.size / 1_073_741_824, mh.flags, idx);
             });
 
-        let qfs = self.fences.iter().map(|f| f.phy_index);
-
-        let mut uniqs: Vec<u32> = Vec::new();
-        qfs.into_iter().for_each(|f|
-            if !uniqs.contains(&f) {
-                uniqs.push(f);
-            }
-        );
+        let uniqs = self.fences.iter()
+            .fold(vec![], |mut acc, f| {
+                if !acc.contains(&f.phy_index) {
+                    acc.push(f.phy_index);
+                }
+                acc
+            });
 
         f.write_fmt(format_args!("  Found {} compute core(s) with {} total of thread(s)", uniqs.len(), self.fences.len()))
     }
