@@ -1,8 +1,6 @@
 mod lib_test;
 
-use std::error::Error;
-use std::fmt;
-use std::sync::RwLock;
+use std::{error::Error, fmt, sync::RwLock};
 
 use ash::vk;
 use gpu_allocator::vulkan::*;
@@ -20,51 +18,20 @@ const SHADER_ENTRYPOINT: *const std::os::raw::c_char = concat!("main", "\0") as 
 
 pub fn new(
     debug: DebugOption
-) -> Result<(Vulkan, Vec<Compute>), Box<dyn Error>> {
-
+) -> Result<Vulkan, Box<dyn Error>> {
     let vk = Vulkan::new(debug)?;
-    println!("Found Vulkan version: {:?}", vk.version()?);
-
-    let pdevices = unsafe { vk.instance.enumerate_physical_devices()? };
-    let logical_devices = pdevices
-        .into_iter()
-        .map(|pdevice| {
-
-            println!("Found device: {}", vk.device_name(pdevice));
-
-            let queue_infos = unsafe { vk.queue_infos(pdevice) };
-            let device = vk.create_device(pdevice, &queue_infos)?;
-            let fences = vk.create_fences(&device, &queue_infos)?;
-            let allocator = vk.create_allocator(pdevice, &device)?;
-            let memory = unsafe { vk.instance.get_physical_device_memory_properties(pdevice) };
-
-            let sp = vk.subgroup_properties(pdevice);
-            println!("Subgroup size of {} is: {:?}", vk.device_name(pdevice), sp.subgroup_size);
-            println!("Supported subgroup operations: {:?}", sp.supported_operations);
-            println!("Supported subgroup stages: {:?}", sp.supported_stages);
-
-            Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
-
-        })
-        .collect::<Result<Vec<Compute>, Box<dyn Error>>>()?
-        .into_iter()
-        .filter(|c| !c.fences.is_empty())
-        .collect::<Vec<Compute>>();
-
-    match logical_devices.is_empty() {
-        true => Err("No compute capable devices".to_string().into()),
-        false => Ok((vk, logical_devices)),
+    if vk.compute.is_empty() {
+        return Err("No compute capable devices".to_string().into())
     }
+    Ok(vk)
 }
 
 pub struct Vulkan {
-    // Entry: Loads the Vulkan library.
-    // Needs to outlive Instance and Device.
-    _entry: ash::Entry,
-    // Instance: Loads instance level functions.
-    // Needs to outlive the Devices it has created.
-    instance: ash::Instance,
+    _entry: ash::Entry, // Needs to outlive Instance and Devices.
+    instance: ash::Instance, // Needs to outlive Devices.
     debug_layer: Option<DebugLayer>,
+
+    pub compute: Vec<Compute>,
 }
 
 impl Vulkan {
@@ -122,7 +89,9 @@ impl Vulkan {
             },
         };
 
-        Ok(Vulkan{_entry, instance, debug_layer})
+        let compute = Self::logical_devices(&instance)?;
+
+        Ok(Vulkan{_entry, instance, debug_layer, compute})
     }
 
     fn version(
@@ -134,17 +103,50 @@ impl Vulkan {
         }
     }
 
+    fn logical_devices(
+        instance: &ash::Instance,
+    ) -> Result<Vec<Compute>, Box<dyn Error>> {
+        let pdevices = unsafe { instance.enumerate_physical_devices()? };
+        Ok(pdevices.into_iter()
+            .filter(|pdevice| {
+                let (_, properties) = Self::device_name(instance, *pdevice);
+                properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
+            })
+            .map(|pdevice| {
+
+                let (device_name, _) = Self::device_name(instance, pdevice);
+                println!("Found device: {}", device_name);
+                let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
+                let device = Self::create_device(instance, pdevice, &queue_infos)?;
+                let fences = Self::create_fences(&device, &queue_infos)?;
+                let allocator = Allocator::new(&AllocatorCreateDesc {
+                    physical_device: pdevice,
+                    device: device.clone(),
+                    instance: instance.clone(),
+                    debug_settings: Default::default(),
+                    buffer_device_address: false,
+                })?;
+                let memory = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+
+                let sp = Self::subgroup_properties(instance, pdevice);
+                println!("Subgroup size of {} is: {:?}", device_name, sp.subgroup_size);
+                println!("Supported subgroup operations: {:?}", sp.supported_operations);
+                println!("Supported subgroup stages: {:?}", sp.supported_stages);
+
+                Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
+
+            })
+            .collect::<Result<Vec<Compute>, Box<dyn Error>>>()?.into_iter()
+            .filter(|c| !c.fences.is_empty())
+            .collect::<Vec<Compute>>())
+    }
+
     unsafe fn queue_infos(
-        &self,
+        instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
     ) -> Vec<vk::DeviceQueueCreateInfo> {
-        self.instance
-            .get_physical_device_queue_family_properties(pdevice)
-            .iter().enumerate()
-            .filter(|(idx, prop)| {
-                println!("Queue family at index {} has {} thread(s) and capabilities: {:?}", idx, prop.queue_count, prop.queue_flags);
-                prop.queue_flags.contains(vk::QueueFlags::COMPUTE)
-            })
+        instance.get_physical_device_queue_family_properties(pdevice).iter().enumerate()
+            .filter(|(_, prop)| prop.queue_flags.contains(vk::QueueFlags::COMPUTE))
             .map(|(idx, prop)| {
                 vk::DeviceQueueCreateInfo::builder()
                     .queue_family_index(idx as u32)
@@ -155,34 +157,33 @@ impl Vulkan {
     }
 
     fn device_name(
-        &self,
+        instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
-    ) -> String {
+    ) -> (String, vk::PhysicalDeviceProperties)  {
         let mut dp2 = vk::PhysicalDeviceProperties2::builder().build();
-        unsafe { self.instance.fp_v1_1().get_physical_device_properties2(pdevice, &mut dp2) };
+        unsafe { instance.fp_v1_1().get_physical_device_properties2(pdevice, &mut dp2) };
         let device_name = dp2.properties.device_name.iter()
             .filter_map(|f| match *f as u8 {
                 0 => None,
                 _ => Some(*f as u8 as char),
             })
             .collect::<String>();
-        format!("{} ({:?})", device_name, dp2.properties.device_type)
+        (device_name, dp2.properties)
     }
 
     fn subgroup_properties(
-        &self,
+        instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
     ) -> vk::PhysicalDeviceSubgroupProperties {
         // Retrieving Subgroup operations will segfault a Mac
         // https://www.khronos.org/blog/vulkan-subgroup-tutorial
         let mut sp = vk::PhysicalDeviceSubgroupProperties::builder();
         let mut dp2 = vk::PhysicalDeviceProperties2::builder().push_next(&mut sp).build();
-        unsafe { self.instance.fp_v1_1().get_physical_device_properties2(pdevice, &mut dp2); }
+        unsafe { instance.fp_v1_1().get_physical_device_properties2(pdevice, &mut dp2); }
         sp.build()
     }
 
     fn create_fences(
-        &self,
         device: &ash::Device,
         queue_infos: &[vk::DeviceQueueCreateInfo]
     ) -> Result<Vec<Fence>, Box<dyn Error>> {
@@ -192,19 +193,17 @@ impl Vulkan {
                 let present_queue = unsafe { device.get_device_queue(info.queue_family_index, queue_index) };
                 Ok(Fence{ fence: vk_fence, present_queue, phy_index: info.queue_family_index })
             })
-            .collect::<Result<Vec<Fence>, Box<dyn Error>>>()
-            .into_iter()
+            .collect::<Result<Vec<Fence>, Box<dyn Error>>>().into_iter()
             .flatten()
         })
-        .into_iter()
         .collect())
     }
 
     fn create_device(
-        &self,
+        instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
         queue_infos: &[vk::DeviceQueueCreateInfo],
-    ) -> Result<ash::Device, Box<dyn Error>> {
+    ) -> Result<ash::Device, vk::Result> {
 
         let features = vk::PhysicalDeviceFeatures {
             ..Default::default()
@@ -231,21 +230,7 @@ impl Vulkan {
             .enabled_features(&features)
             .push_next(&mut variable_pointers);
 
-        unsafe { Ok(self.instance.create_device(pdevice, &device_info, None)?) }
-    }
-
-    fn create_allocator(
-        &self,
-        pdevice: vk::PhysicalDevice,
-        device: &ash::Device,
-    ) -> Result<Allocator, Box<dyn Error>> {
-        Ok(Allocator::new(&AllocatorCreateDesc {
-            physical_device: pdevice,
-            device: device.clone(),
-            instance: self.instance.clone(),
-            debug_settings: Default::default(),
-            buffer_device_address: false,
-        })?)
+        unsafe { instance.create_device(pdevice, &device_info, None) }
     }
 }
 
@@ -351,7 +336,7 @@ impl <'a> Shader<'_> {
         )? };
 
         let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(binary), None)? };
-        let entry_point = vk::PipelineShaderStageCreateInfo {
+        let stage = vk::PipelineShaderStageCreateInfo {
             p_name: SHADER_ENTRYPOINT,
             module,
             stage: vk::ShaderStageFlags::COMPUTE,
@@ -367,11 +352,7 @@ impl <'a> Shader<'_> {
 
         let pipeline = unsafe { device.create_compute_pipelines(
             vk::PipelineCache::null(),
-            &[vk::ComputePipelineCreateInfo::builder()
-                .stage(entry_point)
-                .layout(pipeline_layout)
-                .build()
-            ],
+            &[vk::ComputePipelineCreateInfo::builder().stage(stage).layout(pipeline_layout).build()],
             None,
         ) }.map(|pipelines| pipelines[0]).map_err(|(_, err)| err)?;
 
@@ -383,11 +364,8 @@ impl <'a> Shader<'_> {
         x: &mut R
     ) -> Result<Shader<'a>, Box<dyn Error>> {
         let binary = ash::util::read_spv(x)?;
-        let module = Shader::module(&binary)?;
-        let binding_count = Shader::binding_count(&module);
-        let bindings = Shader::descriptor_set_layout_bindings(binding_count);
-        let shader = Shader::create(&compute.device, &bindings, &binary)?;
-        Ok(shader)
+        let bindings = Self::module(&binary).map(|module| Self::descriptor_set_layout_bindings(Self::binding_count(&module)))?;
+        Shader::create(&compute.device, &bindings, &binary)
     }
 }
 
@@ -462,7 +440,7 @@ impl Compute {
         &self,
         queue_family_indices: &[u32],
         inputs: &[Vec<T>]
-    ) -> Result<Vec<Buffer>, Box<dyn Error>> {
+    ) -> Result<Vec<Buffer>, Box<dyn Error + Send + Sync>> {
         inputs.iter().map(|data| {
             Buffer::new(
                 &self.device,
@@ -482,14 +460,14 @@ impl Compute {
     fn task<T>(
         &self,
         command: &Command,
-        func: &Shader<'_>,
+        shader: &Shader<'_>,
         queue_family_indices: &[u32],
         cpu_buffer: &Buffer<'_, '_>,
         input: &[Vec<Vec<T>>],
         memory_mappings: Vec<(usize, vk::DeviceSize, vk::DeviceSize)>,
-    ) -> Result<Vec<Vec<Buffer>>, Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
-        Ok(command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
+        command.command_buffers.iter().enumerate().try_for_each(|(index, command_buffer)| {
 
             let ds = command.descriptor_sets[index];
             let (index_offset, cpu_offset, cpu_chunk_size) = memory_mappings[index];
@@ -543,8 +521,8 @@ impl Compute {
             );
 
             unsafe {
-                self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, func.pipeline);
-                self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, func.pipeline_layout, 0, &[ds], &[]);
+                self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
+                self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[ds], &[]);
                 self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
 
                 self.device.cmd_copy_buffer(
@@ -561,11 +539,8 @@ impl Compute {
                 self.device.end_command_buffer(*command_buffer)?;
             }
 
-            Ok(cpu_buffers)
-
+            Ok(())
         })
-        .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error>>>()
-        .into_iter().flatten().collect())
     }
 
     pub fn execute<T: std::marker::Sync>(
@@ -573,7 +548,7 @@ impl Compute {
         input: &[Vec<Vec<T>>],
         out_length: usize,
         shader: &Shader,
-    ) -> Result<&[T], Box<dyn Error>> {
+    ) -> Result<&[T], Box<dyn Error + Send + Sync>> {
 
         let threads = &self.fences[0..input.len()];
 
@@ -592,7 +567,7 @@ impl Compute {
             &queue_family_indices,
         )?;
 
-        let executions = threads.par_iter().enumerate().map(|(fence_idx, fence)| {
+        threads.par_iter().enumerate().try_for_each(|(fence_idx, fence)| -> Result<(), Box<dyn Error + Send + Sync>> {
 
             let command = Command::new(
                 fence.phy_index as u32,
@@ -612,14 +587,7 @@ impl Compute {
                 })
                 .collect::<Vec<(usize, vk::DeviceSize, vk::DeviceSize)>>();
 
-            let _buffers = self.task(
-                &command,
-                shader,
-                &queue_family_indices,
-                &cpu_buffer,
-                input,
-                memory_mappings,
-            );
+            self.task(&command, shader, &queue_family_indices, &cpu_buffer, input, memory_mappings)?;
 
             let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
             unsafe {
@@ -630,19 +598,13 @@ impl Compute {
 
             Ok(())
 
-        })
-        .collect::<Result<(), Box<dyn Error + Send + Sync>>>();
+        })?;
 
-        match executions {
-            Ok(_) => {
-                let mapping = match cpu_buffer.allocation.mapped_ptr() {
-                    Some(c_ptr) => c_ptr.as_ptr() as *const T,
-                    None => return Err("could not map output buffer".to_string().into()),
-                };
-                unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len())) }
-            },
-            Err(err) => Err(err),
-        }
+        let mapping = match cpu_buffer.allocation.mapped_ptr() {
+            Some(c_ptr) => c_ptr.as_ptr() as *const T,
+            None => return Err("could not map output buffer".to_string().into()),
+        };
+        unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len())) }
     }
 }
 
@@ -674,7 +636,7 @@ impl <'a> Command<'_> {
         device: &ash::Device,
         descriptor_count: u32,
         max_sets: u32,
-    ) -> Result<vk::DescriptorPool, Box<dyn Error + Send + Sync>> {
+    ) -> Result<vk::DescriptorPool, vk::Result> {
         let descriptor_pool_size = [vk::DescriptorPoolSize::builder()
             .ty(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(descriptor_count)
@@ -682,27 +644,27 @@ impl <'a> Command<'_> {
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::builder()
             .max_sets(max_sets)
             .pool_sizes(&descriptor_pool_size);
-        unsafe { Ok(device.create_descriptor_pool(&descriptor_pool_info, None)?) }
+        unsafe { device.create_descriptor_pool(&descriptor_pool_info, None) }
     }
 
     fn command_pool(
         device: &ash::Device,
         queue_family_index: u32,
-    ) -> Result<vk::CommandPool, Box<dyn Error + Send + Sync>> {
+    ) -> Result<vk::CommandPool, vk::Result> {
         let command_pool_info = vk::CommandPoolCreateInfo::builder()
             .queue_family_index(queue_family_index);
-        unsafe { Ok(device.create_command_pool(&command_pool_info, None)?) }
+        unsafe { device.create_command_pool(&command_pool_info, None) }
     }
 
     fn allocate_command_buffers(
         device: &ash::Device,
         command_pool: vk::CommandPool,
         command_buffer_count: u32,
-    ) -> Result<Vec<vk::CommandBuffer>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Vec<vk::CommandBuffer>, vk::Result> {
         let command_buffers_info = vk::CommandBufferAllocateInfo::builder()
             .command_buffer_count(command_buffer_count)
             .command_pool(command_pool);
-        unsafe { Ok(device.allocate_command_buffers(&command_buffers_info)?) }
+        unsafe { device.allocate_command_buffers(&command_buffers_info) }
     }
 
     fn new(
@@ -727,13 +689,7 @@ impl <'a> Command<'_> {
         let command_pool = Command::command_pool(device, queue_family_index)?;
         let command_buffers = Command::allocate_command_buffers(device, command_pool, command_buffer_count)?;
 
-        Ok(Command {
-            descriptor_pool,
-            command_pool,
-            command_buffers,
-            descriptor_sets,
-            device,
-        })
+        Ok(Command { descriptor_pool, command_pool, command_buffers, descriptor_sets, device })
     }
 }
 
@@ -766,7 +722,7 @@ impl <'a, 'b> Buffer<'_, '_> {
         usage: vk::BufferUsageFlags,
         location: gpu_allocator::MemoryLocation,
         queue_family_indices: &[u32],
-    ) -> Result<Buffer<'a, 'b>, Box<dyn Error>> {
+    ) -> Result<Buffer<'a, 'b>, Box<dyn Error + Send + Sync>> {
         let create_info = vk::BufferCreateInfo::builder()
             .size(device_size)
             .usage(usage)
@@ -775,7 +731,7 @@ impl <'a, 'b> Buffer<'_, '_> {
                 _ => vk::SharingMode::CONCURRENT,
             })
             .queue_family_indices(queue_family_indices);
-        let buffer = unsafe { device.create_buffer(&create_info, None) }?;
+        let buffer = unsafe { device.create_buffer(&create_info, None)? };
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         let mut malloc = allocator.as_ref().unwrap().write().unwrap();
         let allocation = malloc.allocate(&AllocationCreateDesc {
@@ -785,19 +741,13 @@ impl <'a, 'b> Buffer<'_, '_> {
             linear: true,
         })?;
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())?; }
-        Ok(Buffer {
-            buffer,
-            allocation,
-            device_size,
-            device,
-            allocator,
-        })
+        Ok(Buffer { buffer, allocation, device_size, device, allocator })
     }
 
     fn fill<T: Sized>(
         &self,
         data: &[T],
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let data_ptr = match self.allocation.mapped_ptr() {
             Some(c_ptr) => c_ptr.as_ptr() as *mut T,
             None => return Err("could not fill buffer".to_string().into()),

@@ -2,9 +2,9 @@ use rivi_loader::{DebugOption, Shader};
 
 fn main() {
 
-    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Total number of compute device(s): {}", devices.len());
-    assert_eq!(devices.len(), 2);
+    let vk = rivi_loader::new(DebugOption::None).unwrap();
+    println!("Total number of compute device(s): {}", vk.compute.len());
+    assert_eq!(vk.compute.len(), 2);
 
     let a: Vec<f32> = vec![1.0, 2.0];
     let b: Vec<f32> = vec![3.0, 4.0];
@@ -21,9 +21,7 @@ fn main() {
       vec![vec![c, d]],
     ];
 
-    let joined = devices
-      .iter()
-      .enumerate()
+    let joined = vk.compute.iter().enumerate()
       .map(|(idx, c)| {
         println!("Device {}\n{:?}", idx+1, c);
 
@@ -38,9 +36,7 @@ fn main() {
       })
       .collect::<Vec<Vec<f32>>>();
 
-    joined
-      .iter()
-      .enumerate()
+    joined.iter().enumerate()
       .for_each(|(idx, res)| println!("Result of GPU {}: {:?}", idx+1, res));
 
     let expected_output: Vec<f32> = vec![4.0, 6.0, 2.0, 4.0];

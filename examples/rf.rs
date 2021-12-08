@@ -13,16 +13,16 @@ use rivi_loader::{DebugOption, Shader};
 fn main() {
 
     // initialize vulkan process
-    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Found {} compute device(s)", devices.len());
-    let cores = devices.iter().map(|d| d.cores()).sum::<usize>();
+    let vk = rivi_loader::new(DebugOption::None).unwrap();
+    println!("Found {} compute device(s)", vk.compute.len());
+    let cores = vk.compute.iter().map(|d| d.cores()).sum::<usize>();
     println!("Found {} core(s)", cores);
 
     // replicate work among cores
     let input = load_input(cores);
 
     // bind shader to a compute device
-    let compute = devices.first().unwrap();
+    let compute = vk.compute.first().unwrap();
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
     let shader = Shader::new(compute, &mut cursor).unwrap();
 

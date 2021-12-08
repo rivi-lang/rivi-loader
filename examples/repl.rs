@@ -7,11 +7,11 @@ fn main() {
     let expected_output: Vec<f32> = vec![4.0, 6.0];
     let out_length = expected_output.len();
 
-    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Found {} compute device(s)", devices.len());
-    println!("Found {} core(s)", devices.iter().map(|d| d.cores()).sum::<usize>());
+    let vk = rivi_loader::new(DebugOption::None).unwrap();
+    println!("Found {} compute device(s)", vk.compute.len());
+    println!("Found {} core(s)", vk.compute.iter().map(|d| d.cores()).sum::<usize>());
 
-    let compute = devices.first().unwrap();
+    let compute = vk.compute.first().unwrap();
 
     let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
     let shader = Shader::new(compute, &mut cursor).unwrap();
