@@ -15,7 +15,7 @@ fn main() {
     // initialize vulkan process
     let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
     println!("Found {} compute device(s)", devices.len());
-    let cores = devices.iter().map(|f| f.fences.len()).sum::<usize>();
+    let cores = devices.iter().map(|d| d.cores()).sum::<usize>();
     println!("Found {} core(s)", cores);
 
     // replicate work among cores

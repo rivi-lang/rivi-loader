@@ -9,7 +9,7 @@ fn main() {
 
     let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
     println!("Found {} compute device(s)", devices.len());
-    println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
+    println!("Found {} core(s)", devices.iter().map(|d| d.cores()).sum::<usize>());
 
     let compute = devices.first().unwrap();
 

@@ -23,7 +23,6 @@ pub fn new(
 ) -> Result<(Vulkan, Vec<Compute>), Box<dyn Error>> {
 
     let vk = Vulkan::new(debug)?;
-
     println!("Found Vulkan version: {:?}", vk.version()?);
 
     let pdevices = unsafe { vk.instance.enumerate_physical_devices()? };
@@ -33,20 +32,16 @@ pub fn new(
 
             println!("Found device: {}", vk.device_name(pdevice));
 
+            let queue_infos = unsafe { vk.queue_infos(pdevice) };
+            let device = vk.create_device(pdevice, &queue_infos)?;
+            let fences = vk.create_fences(&device, &queue_infos)?;
+            let allocator = vk.create_allocator(pdevice, &device)?;
+            let memory = unsafe { vk.instance.get_physical_device_memory_properties(pdevice) };
+
             let sp = vk.subgroup_properties(pdevice);
-            println!("Physical device has subgroup size of: {:?}", sp.subgroup_size);
+            println!("Subgroup size of {} is: {:?}", vk.device_name(pdevice), sp.subgroup_size);
             println!("Supported subgroup operations: {:?}", sp.supported_operations);
             println!("Supported subgroup stages: {:?}", sp.supported_stages);
-
-            let queue_infos = unsafe { vk.queue_infos(pdevice) };
-
-            let device = vk.create_device(pdevice, &queue_infos)?;
-
-            let fences = vk.create_fences(&device, &queue_infos)?;
-
-            let allocator = vk.create_allocator(pdevice, &device)?;
-
-            let memory = unsafe { vk.instance.get_physical_device_memory_properties(pdevice) };
 
             Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
 
@@ -74,7 +69,7 @@ pub struct Vulkan {
 
 impl Vulkan {
 
-    pub fn new(
+    fn new(
         debug: DebugOption
     ) -> Result<Vulkan, Box<dyn Error>> {
 
@@ -145,17 +140,15 @@ impl Vulkan {
     ) -> Vec<vk::DeviceQueueCreateInfo> {
         self.instance
             .get_physical_device_queue_family_properties(pdevice)
-            .iter()
-            .enumerate()
+            .iter().enumerate()
             .filter(|(idx, prop)| {
                 println!("Queue family at index {} has {} thread(s) and capabilities: {:?}", idx, prop.queue_count, prop.queue_flags);
                 prop.queue_flags.contains(vk::QueueFlags::COMPUTE)
             })
             .map(|(idx, prop)| {
-                let queues = vec![1.0f32; prop.queue_count as usize];
                 vk::DeviceQueueCreateInfo::builder()
                     .queue_family_index(idx as u32)
-                    .queue_priorities(&queues)
+                    .queue_priorities(&vec![1.0f32; prop.queue_count as usize])
                     .build()
             })
             .collect()
@@ -167,8 +160,7 @@ impl Vulkan {
     ) -> String {
         let mut dp2 = vk::PhysicalDeviceProperties2::builder().build();
         unsafe { self.instance.fp_v1_1().get_physical_device_properties2(pdevice, &mut dp2) };
-        let device_name = dp2.properties.device_name
-            .iter()
+        let device_name = dp2.properties.device_name.iter()
             .filter_map(|f| match *f as u8 {
                 0 => None,
                 _ => Some(*f as u8 as char),
@@ -213,6 +205,7 @@ impl Vulkan {
         pdevice: vk::PhysicalDevice,
         queue_infos: &[vk::DeviceQueueCreateInfo],
     ) -> Result<ash::Device, Box<dyn Error>> {
+
         let features = vk::PhysicalDeviceFeatures {
             ..Default::default()
         };
@@ -254,7 +247,6 @@ impl Vulkan {
             buffer_device_address: false,
         })?)
     }
-
 }
 
 impl Drop for Vulkan {
@@ -266,19 +258,18 @@ impl Drop for Vulkan {
     }
 }
 
-struct DebugLayer {
-    loader: ash::extensions::ext::DebugUtils,
-    callback: vk::DebugUtilsMessengerEXT,
-}
-
 pub enum DebugOption {
     None,
     Validation,
     Debug,
 }
 
-impl DebugLayer {
+struct DebugLayer {
+    loader: ash::extensions::ext::DebugUtils,
+    callback: vk::DebugUtilsMessengerEXT,
+}
 
+impl DebugLayer {
     extern "system" fn callback(
         message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
         message_type: vk::DebugUtilsMessageTypeFlagsEXT,
@@ -291,7 +282,6 @@ impl DebugLayer {
         println!("[Debug][{}][{}] {:?}", severity, ty, message);
         vk::FALSE
     }
-
 }
 
 impl Drop for DebugLayer {
@@ -303,11 +293,11 @@ impl Drop for DebugLayer {
 }
 
 pub struct Shader<'a> {
-    pub shader_module: vk::ShaderModule,
-    pub pipeline_layout: vk::PipelineLayout,
-    pub pipeline: vk::Pipeline,
-    pub set_layouts: Vec<vk::DescriptorSetLayout>,
-    pub binding_count: usize,
+    module: vk::ShaderModule,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    set_layouts: Vec<vk::DescriptorSetLayout>,
+    binding_count: usize,
 
     device: &'a ash::Device,
 }
@@ -345,26 +335,25 @@ impl <'a> Shader<'_> {
         .collect()
     }
 
-    pub fn create(
+    fn create(
         device: &'a ash::Device,
         bindings: &[vk::DescriptorSetLayoutBinding],
         binary: &[u32],
     ) -> Result<Shader<'a>, Box<dyn Error>> {
-        let set_layout = unsafe { device.create_descriptor_set_layout(
+        let set_layouts = unsafe { device.create_descriptor_set_layout(
             &vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings),
             None,
-        )? };
-        let set_layouts = vec![set_layout];
+        ) }.map(|set_layout| vec![set_layout])?;
 
         let pipeline_layout = unsafe { device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::builder().set_layouts(&set_layouts),
             None,
         )? };
 
-        let shader_module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(binary), None)? };
+        let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(binary), None)? };
         let entry_point = vk::PipelineShaderStageCreateInfo {
             p_name: SHADER_ENTRYPOINT,
-            module: shader_module,
+            module,
             stage: vk::ShaderStageFlags::COMPUTE,
             // According to https://raphlinus.github.io/gpu/2020/04/30/prefix-sum.html
             // "Another problem is querying the subgroup size from inside the kernel, which has a
@@ -376,7 +365,7 @@ impl <'a> Shader<'_> {
             ..Default::default()
         };
 
-        let pipelines = unsafe { device.create_compute_pipelines(
+        let pipeline = unsafe { device.create_compute_pipelines(
             vk::PipelineCache::null(),
             &[vk::ComputePipelineCreateInfo::builder()
                 .stage(entry_point)
@@ -384,14 +373,9 @@ impl <'a> Shader<'_> {
                 .build()
             ],
             None,
-        ) };
+        ) }.map(|pipelines| pipelines[0]).map_err(|(_, err)| err)?;
 
-        let pipeline = match pipelines {
-            Ok(f) => f[0],
-            Err((_, err)) => return Err(Box::new(err)),
-        };
-
-        Ok(Shader{shader_module, pipeline_layout, pipeline, set_layouts, device, binding_count: bindings.len()})
+        Ok(Shader{module, pipeline_layout, pipeline, set_layouts, device, binding_count: bindings.len()})
     }
 
     pub fn new<R: std::io::Read + std::io::Seek>(
@@ -413,7 +397,7 @@ impl <'a> Drop for Shader<'a> {
     ) {
         unsafe {
             self.device.destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_shader_module(self.shader_module, None);
+            self.device.destroy_shader_module(self.module, None);
             for set_layout in self.set_layouts.to_owned() {
                 self.device.destroy_descriptor_set_layout(set_layout, None);
             }
@@ -422,17 +406,16 @@ impl <'a> Drop for Shader<'a> {
     }
 }
 
-pub struct Fence {
-    pub fence: vk::Fence,
-    pub present_queue: vk::Queue,
-    pub phy_index: u32,
+struct Fence {
+    fence: vk::Fence,
+    present_queue: vk::Queue,
+    phy_index: u32,
 }
 
 pub struct Compute {
-    pub device: ash::Device,
-    pub allocator: Option<RwLock<Allocator>>,
-    pub fences: Vec<Fence>,
-
+    device: ash::Device,
+    allocator: Option<RwLock<Allocator>>,
+    fences: Vec<Fence>,
     memory: vk::PhysicalDeviceMemoryProperties,
 }
 
@@ -468,6 +451,12 @@ impl fmt::Debug for Compute {
 }
 
 impl Compute {
+
+    pub fn cores(
+        &self
+    ) -> usize {
+        self.fences.len()
+    }
 
     fn create_cpu_inputs<T>(
         &self,
@@ -614,18 +603,14 @@ impl Compute {
                 &self.device,
             )?;
 
-            let max_sets = input.len() as vk::DeviceSize;
-
-            let memory_mappings = command.command_buffers
-                .iter()
-                .enumerate()
-                .map(|(index, _)| {
+            let memory_mappings = (0..command.command_buffers.len()).into_iter()
+                .map(|index| {
                     let index_offset = command.command_buffers.len() * fence_idx + index;
-                    let cpu_offset: vk::DeviceSize = (cpu_buffer.device_size / max_sets) * index_offset as vk::DeviceSize;
-                    let cpu_chunk_size: vk::DeviceSize = cpu_buffer.device_size / max_sets;
+                    let cpu_offset = (cpu_buffer.device_size / input.len() as vk::DeviceSize) * index_offset as vk::DeviceSize;
+                    let cpu_chunk_size = cpu_buffer.device_size / input.len() as vk::DeviceSize;
                     (index_offset, cpu_offset, cpu_chunk_size)
                 })
-                .collect::<Vec<_>>();
+                .collect::<Vec<(usize, vk::DeviceSize, vk::DeviceSize)>>();
 
             let _buffers = self.task(
                 &command,
@@ -674,11 +659,11 @@ impl Drop for Compute {
     }
 }
 
-pub struct Command<'a> {
-    pub descriptor_pool: vk::DescriptorPool,
-    pub command_pool: vk::CommandPool,
-    pub command_buffers: Vec<vk::CommandBuffer>,
-    pub descriptor_sets: Vec<vk::DescriptorSet>,
+struct Command<'a> {
+    descriptor_pool: vk::DescriptorPool,
+    command_pool: vk::CommandPool,
+    command_buffers: Vec<vk::CommandBuffer>,
+    descriptor_sets: Vec<vk::DescriptorSet>,
 
     device: &'a ash::Device,
 }
@@ -720,7 +705,7 @@ impl <'a> Command<'_> {
         unsafe { Ok(device.allocate_command_buffers(&command_buffers_info)?) }
     }
 
-    pub fn new(
+    fn new(
         queue_family_index: u32,
         descriptor_count: u32,
         max_sets: u32,
@@ -763,10 +748,10 @@ impl <'a> Drop for Command<'a> {
     }
 }
 
-pub struct Buffer<'a, 'b>  {
-    pub buffer: vk::Buffer,
-    pub allocation: Allocation,
-    pub device_size: vk::DeviceSize,
+struct Buffer<'a, 'b>  {
+    buffer: vk::Buffer,
+    allocation: Allocation,
+    device_size: vk::DeviceSize,
 
     device: &'a ash::Device,
     allocator: &'b Option<RwLock<Allocator>>,
@@ -774,22 +759,21 @@ pub struct Buffer<'a, 'b>  {
 
 impl <'a, 'b> Buffer<'_, '_> {
 
-    pub fn new(
+    fn new(
         device: &'a ash::Device,
         allocator: &'b Option<RwLock<Allocator>>,
         device_size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
-        memory_usage: gpu_allocator::MemoryLocation,
+        location: gpu_allocator::MemoryLocation,
         queue_family_indices: &[u32],
     ) -> Result<Buffer<'a, 'b>, Box<dyn Error>> {
-        let sharing_mode = match queue_family_indices.len() {
-            1 => vk::SharingMode::EXCLUSIVE,
-            _ => vk::SharingMode::CONCURRENT,
-        };
         let create_info = vk::BufferCreateInfo::builder()
             .size(device_size)
             .usage(usage)
-            .sharing_mode(sharing_mode)
+            .sharing_mode(match queue_family_indices.len() {
+                1 => vk::SharingMode::EXCLUSIVE,
+                _ => vk::SharingMode::CONCURRENT,
+            })
             .queue_family_indices(queue_family_indices);
         let buffer = unsafe { device.create_buffer(&create_info, None) }?;
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
@@ -797,7 +781,7 @@ impl <'a, 'b> Buffer<'_, '_> {
         let allocation = malloc.allocate(&AllocationCreateDesc {
             name: "Allocation",
             requirements,
-            location: memory_usage,
+            location,
             linear: true,
         })?;
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())?; }
@@ -810,15 +794,17 @@ impl <'a, 'b> Buffer<'_, '_> {
         })
     }
 
-    pub fn fill<T: Sized>(
+    fn fill<T: Sized>(
         &self,
         data: &[T],
     ) -> Result<(), Box<dyn Error>> {
-        let data_ptr = self.allocation.mapped_ptr().unwrap().as_ptr() as *mut T;
+        let data_ptr = match self.allocation.mapped_ptr() {
+            Some(c_ptr) => c_ptr.as_ptr() as *mut T,
+            None => return Err("could not fill buffer".to_string().into()),
+        };
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
         Ok(())
     }
-
 }
 
 impl <'a, 'b> Drop for Buffer<'a, 'b> {
