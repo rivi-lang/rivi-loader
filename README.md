@@ -22,15 +22,12 @@ fn main() {
     let out_length = expected_output.len();
 
     let vk = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Found {} compute device(s)", vk.compute.len());
-    println!("Found {} core(s)", vk.compute.iter().map(|d| d.cores()).sum::<usize>());
-
-    let compute = vk.compute.first().unwrap();
 
     let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
-    let shader = Shader::new(compute, &mut cursor).unwrap();
+    let shaders = vk.load_shader(&mut cursor).unwrap();
+    let shader = shaders.first().unwrap();
 
-    let result = compute.execute(input, out_length, &shader).unwrap();
+    let result = vk.compute(input, out_length, shader);
 
     println!("Result: {:?}", result);
     assert_eq!(result, expected_output);

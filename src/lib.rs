@@ -1,6 +1,6 @@
 mod lib_test;
 
-use std::{error::Error, fmt, sync::RwLock};
+use std::{error::Error, fmt, sync::RwLock, convert::TryInto};
 
 use ash::vk;
 use gpu_allocator::vulkan::*;
@@ -30,8 +30,7 @@ pub struct Vulkan {
     _entry: ash::Entry, // Needs to outlive Instance and Devices.
     instance: ash::Instance, // Needs to outlive Devices.
     debug_layer: Option<DebugLayer>,
-
-    pub compute: Vec<Compute>,
+    compute: Vec<Compute>,
 }
 
 impl Vulkan {
@@ -84,8 +83,8 @@ impl Vulkan {
             DebugOption::None => None,
             _ => {
                 let loader = ash::extensions::ext::DebugUtils::new(&_entry, &instance);
-                let callback = unsafe { loader.create_debug_utils_messenger(&info, None)? };
-                Some(DebugLayer{loader, callback})
+                let messenger = unsafe { loader.create_debug_utils_messenger(&info, None)? };
+                Some(DebugLayer{loader, messenger})
             },
         };
 
@@ -232,12 +231,35 @@ impl Vulkan {
 
         unsafe { instance.create_device(pdevice, &device_info, None) }
     }
+
+    pub fn load_shader<R: std::io::Read + std::io::Seek>(
+        &self,
+        x: &mut R
+    ) -> Result<Vec<Shader<'_>>, Box<dyn Error>> {
+        let binary = ash::util::read_spv(x)?;
+        let bindings = Shader::module(&binary).map(|module| Shader::descriptor_set_layout_bindings(Shader::binding_count(&module)))?;
+        self.compute.iter()
+            .map(|f| Shader::create(&f.device, &bindings, &binary))
+            .collect()
+    }
+
+    pub fn compute<T: std::marker::Sync + std::clone::Clone>(
+        &self,
+        input: &[Vec<Vec<T>>],
+        out_length: usize,
+        shader: &Shader,
+    ) -> Vec<T> {
+        self.compute.iter()
+            .flat_map(|c| {
+                let r = c.execute(input, out_length, shader).unwrap();
+                r.to_vec()
+            })
+            .collect::<Vec<T>>()
+    }
 }
 
 impl Drop for Vulkan {
-    fn drop(
-        &mut self
-    ) {
+    fn drop(&mut self) {
         self.debug_layer = None;
         unsafe { self.instance.destroy_instance(None) }
     }
@@ -251,7 +273,7 @@ pub enum DebugOption {
 
 struct DebugLayer {
     loader: ash::extensions::ext::DebugUtils,
-    callback: vk::DebugUtilsMessengerEXT,
+    messenger: vk::DebugUtilsMessengerEXT,
 }
 
 impl DebugLayer {
@@ -270,10 +292,8 @@ impl DebugLayer {
 }
 
 impl Drop for DebugLayer {
-    fn drop(
-        &mut self
-    ) {
-        unsafe { self.loader.destroy_debug_utils_messenger(self.callback, None) }
+    fn drop(&mut self) {
+        unsafe { self.loader.destroy_debug_utils_messenger(self.messenger, None) }
     }
 }
 
@@ -282,7 +302,7 @@ pub struct Shader<'a> {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     set_layouts: Vec<vk::DescriptorSetLayout>,
-    binding_count: usize,
+    binding_count: u32,
 
     device: &'a ash::Device,
 }
@@ -356,31 +376,18 @@ impl <'a> Shader<'_> {
             None,
         ) }.map(|pipelines| pipelines[0]).map_err(|(_, err)| err)?;
 
-        Ok(Shader{module, pipeline_layout, pipeline, set_layouts, device, binding_count: bindings.len()})
-    }
-
-    pub fn new<R: std::io::Read + std::io::Seek>(
-        compute: &'a Compute,
-        x: &mut R
-    ) -> Result<Shader<'a>, Box<dyn Error>> {
-        let binary = ash::util::read_spv(x)?;
-        let bindings = Self::module(&binary).map(|module| Self::descriptor_set_layout_bindings(Self::binding_count(&module)))?;
-        Shader::create(&compute.device, &bindings, &binary)
+        Ok(Shader{module, pipeline_layout, pipeline, set_layouts, device, binding_count: bindings.len().try_into()?})
     }
 }
 
 impl <'a> Drop for Shader<'a> {
-    fn drop(
-        &mut self
-    ) {
-        unsafe {
-            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_shader_module(self.module, None);
-            for set_layout in self.set_layouts.to_owned() {
-                self.device.destroy_descriptor_set_layout(set_layout, None);
-            }
-            self.device.destroy_pipeline(self.pipeline, None);
+    fn drop(&mut self) {
+        unsafe { self.device.destroy_pipeline_layout(self.pipeline_layout, None) };
+        unsafe { self.device.destroy_shader_module(self.module, None) };
+        for set_layout in self.set_layouts.to_owned() {
+            unsafe { self.device.destroy_descriptor_set_layout(set_layout, None) };
         }
+        unsafe { self.device.destroy_pipeline(self.pipeline, None) };
     }
 }
 
@@ -390,7 +397,7 @@ struct Fence {
     phy_index: u32,
 }
 
-pub struct Compute {
+struct Compute {
     device: ash::Device,
     allocator: Option<RwLock<Allocator>>,
     fences: Vec<Fence>,
@@ -457,6 +464,9 @@ impl Compute {
         .collect()
     }
 
+    // task must return a result vector to avoid
+    // rust ownership system to delete it before
+    // it is used by vulkan
     fn task<T>(
         &self,
         command: &Command,
@@ -465,11 +475,10 @@ impl Compute {
         cpu_buffer: &Buffer<'_, '_>,
         input: &[Vec<Vec<T>>],
         memory_mappings: Vec<(usize, vk::DeviceSize, vk::DeviceSize)>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>> {
 
-        command.command_buffers.iter().enumerate().try_for_each(|(index, command_buffer)| {
+        command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
 
-            let ds = command.descriptor_sets[index];
             let (index_offset, cpu_offset, cpu_chunk_size) = memory_mappings[index];
             let cpu_buffers = self.create_cpu_inputs(queue_family_indices, &input[index_offset])?;
 
@@ -489,10 +498,10 @@ impl Compute {
                 .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
 
             let wds = buffer_infos.iter().enumerate()
-                .map(|(index, buf)| {
+                .map(|(i, buf)| {
                     vk::WriteDescriptorSet::builder()
-                        .dst_set(ds)
-                        .dst_binding(index as u32)
+                        .dst_set(command.descriptor_sets[index])
+                        .dst_binding(i as u32)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(buf)
                         .build()
@@ -502,10 +511,8 @@ impl Compute {
             unsafe {
                 self.device.update_descriptor_sets(&wds, &[]);
                 self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
-            };
 
-            cpu_buffers.iter().for_each(|cpu|
-                unsafe {
+                cpu_buffers.iter().for_each(|cpu| {
                     self.device.cmd_copy_buffer(
                         *command_buffer,
                         cpu.buffer,
@@ -517,12 +524,10 @@ impl Compute {
                             .build()
                         ],
                     )
-                }
-            );
+                });
 
-            unsafe {
                 self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
-                self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[ds], &[]);
+                self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[command.descriptor_sets[index]], &[]);
                 self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
 
                 self.device.cmd_copy_buffer(
@@ -539,11 +544,12 @@ impl Compute {
                 self.device.end_command_buffer(*command_buffer)?;
             }
 
-            Ok(())
+            Ok(cpu_buffers)
         })
+        .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()
     }
 
-    pub fn execute<T: std::marker::Sync>(
+    fn execute<T: std::marker::Sync>(
         &self,
         input: &[Vec<Vec<T>>],
         out_length: usize,
@@ -552,8 +558,7 @@ impl Compute {
 
         let threads = &self.fences[0..input.len()];
 
-        let queue_family_indices = threads
-            .iter()
+        let queue_family_indices = threads.iter()
             .map(|f| f.phy_index as u32)
             .collect::<Vec<u32>>();
 
@@ -570,8 +575,8 @@ impl Compute {
         threads.par_iter().enumerate().try_for_each(|(fence_idx, fence)| -> Result<(), Box<dyn Error + Send + Sync>> {
 
             let command = Command::new(
-                fence.phy_index as u32,
-                shader.binding_count as u32,
+                fence.phy_index,
+                shader.binding_count,
                 input.len() as u32,
                 &shader.set_layouts,
                 (input.len() / threads.len()) as u32,
@@ -587,12 +592,14 @@ impl Compute {
                 })
                 .collect::<Vec<(usize, vk::DeviceSize, vk::DeviceSize)>>();
 
-            self.task(&command, shader, &queue_family_indices, &cpu_buffer, input, memory_mappings)?;
+            // even though buffers are not used, it must outlive queue submits and fence waiting.
+            // otherwise, the memory "disappears" and will cause problems on discrete cards.
+            let _buffers = self.task(&command, shader, &queue_family_indices, &cpu_buffer, input, memory_mappings)?;
 
             let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
             unsafe {
                 self.device.queue_submit(fence.present_queue, &submits, fence.fence)?;
-                self.device.wait_for_fences(&[fence.fence], true, std::u64::MAX)?;
+                self.device.wait_for_fences(&[fence.fence], true, u64::MAX)?;
                 self.device.reset_fences(&[fence.fence])?;
             }
 
@@ -609,9 +616,7 @@ impl Compute {
 }
 
 impl Drop for Compute {
-    fn drop(
-        &mut self
-    ) {
+    fn drop(&mut self) {
         unsafe { self.device.device_wait_idle().unwrap() }
         for fence in &self.fences {
             unsafe { self.device.destroy_fence(fence.fence, None) }
@@ -694,13 +699,9 @@ impl <'a> Command<'_> {
 }
 
 impl <'a> Drop for Command<'a> {
-    fn drop(
-        &mut self
-    ) {
-        unsafe {
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
-        }
+    fn drop(&mut self) {
+        unsafe { self.device.destroy_command_pool(self.command_pool, None) };
+        unsafe { self.device.destroy_descriptor_pool(self.descriptor_pool, None) };
     }
 }
 
@@ -740,7 +741,7 @@ impl <'a, 'b> Buffer<'_, '_> {
             location,
             linear: true,
         })?;
-        unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())?; }
+        unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
         Ok(Buffer { buffer, allocation, device_size, device, allocator })
     }
 
@@ -758,9 +759,7 @@ impl <'a, 'b> Buffer<'_, '_> {
 }
 
 impl <'a, 'b> Drop for Buffer<'a, 'b> {
-    fn drop(
-        &mut self
-    ) {
+    fn drop(&mut self) {
         let lock = self.allocator.as_ref().unwrap();
         let mut malloc = lock.write().unwrap();
         malloc.free(self.allocation.to_owned()).unwrap();
