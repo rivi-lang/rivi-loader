@@ -64,7 +64,7 @@ impl Vulkan {
             }
         };
 
-        let _entry = unsafe { ash::Entry::new()? };
+        let _entry = unsafe { ash::Entry::load()? };
 
         let instance = unsafe {
             _entry.create_instance(&vk::InstanceCreateInfo::builder()
@@ -256,6 +256,12 @@ impl Vulkan {
             })
             .collect::<Vec<T>>()
     }
+
+    pub fn cores(
+        &self
+    ) -> usize {
+        self.compute.iter().map(|d| d.cores()).sum::<usize>()
+    }
 }
 
 impl Drop for Vulkan {
@@ -384,7 +390,7 @@ impl <'a> Drop for Shader<'a> {
     fn drop(&mut self) {
         unsafe { self.device.destroy_pipeline_layout(self.pipeline_layout, None) };
         unsafe { self.device.destroy_shader_module(self.module, None) };
-        for set_layout in self.set_layouts.to_owned() {
+        for set_layout in self.set_layouts.iter().copied() {
             unsafe { self.device.destroy_descriptor_set_layout(set_layout, None) };
         }
         unsafe { self.device.destroy_pipeline(self.pipeline, None) };
