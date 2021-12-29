@@ -1,6 +1,6 @@
 use std::{error::Error, time::Instant};
 
-use rivi_loader::{DebugOption, Shader};
+use rivi_loader::DebugOption;
 
 /// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
 /// The implementation of this algorithm was derived from Python/Cython to APL, and
@@ -14,28 +14,25 @@ fn main() {
 
     // initialize vulkan process
     let vk = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Found {} compute device(s)", vk.compute.len());
-    let cores = vk.compute.iter().map(|d| d.cores()).sum::<usize>();
-    println!("Found {} core(s)", cores);
 
     // replicate work among cores
-    let input = load_input(cores);
+    let input = load_input(vk.cores());
 
     // bind shader to a compute device
-    let compute = vk.compute.first().unwrap();
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
-    let shader = Shader::new(compute, &mut cursor).unwrap();
+    let shaders = vk.load_shader(&mut cursor).unwrap();
+    let shader = shaders.first().unwrap();
 
     // create upper bound for iterations
-    let bound = (150.0 / cores as f32).ceil() as i32;
+    let bound = (150.0 / vk.cores() as f32).ceil() as i32;
 
     let run_timer = Instant::now();
-    for x in 0..bound {
-        let _result = compute.execute(&input, 1_146_024, &shader).unwrap();
+    (0..bound).for_each(|x| {
+        let _result = vk.compute(&input, 1_146_024, shader);
         println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
         // to check the results below against precomputed answer (slow)
-        //dbg!((_result.iter().sum::<f32>() - 490058.0*cores as f32).abs() < 0.1);
-    }
+        // dbg!((_result.iter().sum::<f32>() - 490058.0*vk.cores() as f32).abs() < 0.1);
+    });
     println!("App executions {}ms", run_timer.elapsed().as_millis());
 }
 
