@@ -257,10 +257,10 @@ impl Vulkan {
             .collect::<Vec<T>>()
     }
 
-    pub fn cores(
+    pub fn threads(
         &self
     ) -> usize {
-        self.compute.iter().map(|d| d.cores()).sum::<usize>()
+        self.compute.iter().map(|d| d.threads()).sum::<usize>()
     }
 }
 
@@ -429,21 +429,25 @@ impl fmt::Debug for Compute {
                 println!("{:?} GiB {:?} (heap {})", mh.size / 1_073_741_824, mh.flags, idx);
             });
 
-        let uniqs = self.fences.iter()
-            .fold(vec![], |mut acc, f| {
-                if !acc.contains(&f.phy_index) {
-                    acc.push(f.phy_index);
-                }
-                acc
-            });
-
-        f.write_fmt(format_args!("  Found {} compute core(s) with {} total of thread(s)", uniqs.len(), self.fences.len()))
+        f.write_fmt(format_args!("  Found {} compute core(s) with {} total of thread(s)", self.cores().len(), self.fences.len()))
     }
 }
 
 impl Compute {
 
     pub fn cores(
+        &self
+    ) -> Vec<u32> {
+        self.fences.iter()
+            .fold(vec![], |mut acc, f| {
+                if !acc.contains(&f.phy_index) {
+                    acc.push(f.phy_index);
+                }
+                acc
+            })
+    }
+
+    pub fn threads(
         &self
     ) -> usize {
         self.fences.len()
@@ -564,10 +568,6 @@ impl Compute {
 
         let threads = &self.fences[0..input.len()];
 
-        let queue_family_indices = threads.iter()
-            .map(|f| f.phy_index as u32)
-            .collect::<Vec<u32>>();
-
         let size_in_bytes = out_length * input.len() * std::mem::size_of::<T>();
         let cpu_buffer = Buffer::new(
             &self.device,
@@ -575,7 +575,7 @@ impl Compute {
             size_in_bytes as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
             gpu_allocator::MemoryLocation::CpuToGpu,
-            &queue_family_indices,
+            &self.cores(),
         )?;
 
         threads.par_iter().enumerate().try_for_each(|(fence_idx, fence)| -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -600,7 +600,7 @@ impl Compute {
 
             // even though buffers are not used, it must outlive queue submits and fence waiting.
             // otherwise, the memory "disappears" and will cause problems on discrete cards.
-            let _buffers = self.task(&command, shader, &queue_family_indices, &cpu_buffer, input, memory_mappings)?;
+            let _buffers = self.task(&command, shader, &self.cores(), &cpu_buffer, input, memory_mappings)?;
 
             let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
             unsafe {

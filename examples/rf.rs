@@ -16,7 +16,7 @@ fn main() {
     let vk = rivi_loader::new(DebugOption::None).unwrap();
 
     // replicate work among cores
-    let input = load_input(vk.cores());
+    let input = load_input(vk.threads());
 
     // bind shader to a compute device
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
@@ -24,7 +24,7 @@ fn main() {
     let shader = shaders.first().unwrap();
 
     // create upper bound for iterations
-    let bound = (150.0 / vk.cores() as f32).ceil() as i32;
+    let bound = (150.0 / vk.threads() as f32).ceil() as i32;
 
     let run_timer = Instant::now();
     (0..bound).for_each(|x| {
