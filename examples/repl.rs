@@ -13,7 +13,7 @@ fn main() {
     let shaders = vk.load_shader(&mut cursor).unwrap();
     let shader = shaders.first().unwrap();
 
-    let result = vk.compute(input, out_length, shader);
+    let result = vk.compute(input, out_length, shader).unwrap();
 
     println!("Result: {:?}", result);
     assert_eq!(result, expected_output);

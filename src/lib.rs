@@ -248,13 +248,19 @@ impl Vulkan {
         input: &[Vec<Vec<T>>],
         out_length: usize,
         shader: &Shader,
-    ) -> Vec<T> {
-        self.compute.iter()
+    ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
+        let results = self.compute.iter()
             .flat_map(|c| {
-                let r = c.execute(input, out_length, shader).unwrap();
-                r.to_vec()
+                c.execute(input, out_length, shader).unwrap()
             })
-            .collect::<Vec<T>>()
+            .collect();
+        Ok(results)
+    }
+
+    pub fn device_count(
+        &self
+    ) -> usize {
+        self.compute.len()
     }
 
     pub fn threads(
@@ -460,6 +466,7 @@ impl Compute {
     ) -> Result<Vec<Buffer>, Box<dyn Error + Send + Sync>> {
         inputs.iter().map(|data| {
             Buffer::new(
+                "cpu input",
                 &self.device,
                 &self.allocator,
                 (data.len() * std::mem::size_of::<T>()) as u64,
@@ -559,17 +566,18 @@ impl Compute {
         .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()
     }
 
-    fn execute<T: std::marker::Sync>(
+    fn execute<T: std::marker::Sync + std::clone::Clone>(
         &self,
         input: &[Vec<Vec<T>>],
         out_length: usize,
         shader: &Shader,
-    ) -> Result<&[T], Box<dyn Error + Send + Sync>> {
+    ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
 
         let threads = &self.fences[0..input.len()];
 
         let size_in_bytes = out_length * input.len() * std::mem::size_of::<T>();
         let cpu_buffer = Buffer::new(
+            "cpu buffer",
             &self.device,
             &self.allocator,
             size_in_bytes as vk::DeviceSize,
@@ -617,7 +625,7 @@ impl Compute {
             Some(c_ptr) => c_ptr.as_ptr() as *const T,
             None => return Err("could not map output buffer".to_string().into()),
         };
-        unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len())) }
+        unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len()).to_vec()) }
     }
 }
 
@@ -723,6 +731,7 @@ struct Buffer<'a, 'b>  {
 impl <'a, 'b> Buffer<'_, '_> {
 
     fn new(
+        name: &str,
         device: &'a ash::Device,
         allocator: &'b Option<RwLock<Allocator>>,
         device_size: vk::DeviceSize,
@@ -742,13 +751,15 @@ impl <'a, 'b> Buffer<'_, '_> {
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
         let mut malloc = allocator.as_ref().unwrap().write().unwrap();
         let allocation = malloc.allocate(&AllocationCreateDesc {
-            name: "Allocation",
+            name,
             requirements,
             location,
             linear: true,
         })?;
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
-        Ok(Buffer { buffer, allocation, device_size, device, allocator })
+        let buf = Buffer { buffer, allocation, device_size, device, allocator };
+        println!("Memory taken: {:?} MB", (buf.allocation.offset() + buf.allocation.size()) / 1_048_576);
+        Ok(buf)
     }
 
     fn fill<T: Sized>(
@@ -760,6 +771,8 @@ impl <'a, 'b> Buffer<'_, '_> {
             None => return Err("could not fill buffer".to_string().into()),
         };
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
+        println!("Copied {} to buffer with len {}", data.len(), (self.allocation.size() as usize / std::mem::size_of::<T>()));
+        assert_eq!(data.len(), (self.allocation.size() as usize / std::mem::size_of::<T>()));
         Ok(())
     }
 }
