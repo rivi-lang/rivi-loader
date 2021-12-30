@@ -248,13 +248,8 @@ impl Vulkan {
         input: &[Vec<Vec<T>>],
         out_length: usize,
         shader: &Shader,
-    ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
-        let results = self.compute.iter()
-            .flat_map(|c| {
-                c.execute(input, out_length, shader).unwrap()
-            })
-            .collect();
-        Ok(results)
+    ) -> Result<&[T], Box<dyn Error + Send + Sync>> {
+        self.compute.first().unwrap().execute(input, out_length, shader)
     }
 
     pub fn device_count(
@@ -266,7 +261,7 @@ impl Vulkan {
     pub fn threads(
         &self
     ) -> usize {
-        self.compute.iter().map(|d| d.threads()).sum::<usize>()
+        self.compute.iter().map(|d| d.fences.len()).sum::<usize>()
     }
 }
 
@@ -441,44 +436,15 @@ impl fmt::Debug for Compute {
 
 impl Compute {
 
-    pub fn cores(
+    fn cores(
         &self
     ) -> Vec<u32> {
-        self.fences.iter()
-            .fold(vec![], |mut acc, f| {
-                if !acc.contains(&f.phy_index) {
-                    acc.push(f.phy_index);
-                }
-                acc
-            })
-    }
-
-    pub fn threads(
-        &self
-    ) -> usize {
-        self.fences.len()
-    }
-
-    fn create_cpu_inputs<T>(
-        &self,
-        queue_family_indices: &[u32],
-        inputs: &[Vec<T>]
-    ) -> Result<Vec<Buffer>, Box<dyn Error + Send + Sync>> {
-        inputs.iter().map(|data| {
-            Buffer::new(
-                "cpu input",
-                &self.device,
-                &self.allocator,
-                (data.len() * std::mem::size_of::<T>()) as u64,
-                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-                gpu_allocator::MemoryLocation::CpuToGpu,
-                queue_family_indices,
-            ).and_then(|buffer| {
-                buffer.fill(data)?;
-                Ok(buffer)
-            })
+        self.fences.iter().fold(vec![], |mut acc, f| {
+            if !acc.contains(&f.phy_index) {
+                acc.push(f.phy_index);
+            }
+            acc
         })
-        .collect()
     }
 
     // task must return a result vector to avoid
@@ -486,84 +452,93 @@ impl Compute {
     // it is used by vulkan
     fn task<T>(
         &self,
-        command: &Command,
+        descriptor_set: &vk::DescriptorSet,
+        command_buffer: &vk::CommandBuffer,
         shader: &Shader<'_>,
-        queue_family_indices: &[u32],
-        cpu_buffer: &Buffer<'_, '_>,
-        input: &[Vec<Vec<T>>],
-        memory_mappings: Vec<(usize, vk::DeviceSize, vk::DeviceSize)>,
-    ) -> Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>> {
+        output: vk::Buffer,
+        input: &[Vec<T>],
+        memory_mapping: (vk::DeviceSize, vk::DeviceSize),
+    ) -> Result<Vec<Buffer>, Box<dyn Error + Send + Sync>> {
 
-        command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
+        let (cpu_offset, cpu_chunk_size) = memory_mapping;
+        let input_buffers = input.iter().map(|data| {
+            let buffer = Buffer::new(
+                "cpu input",
+                &self.device,
+                &self.allocator,
+                (data.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
+                gpu_allocator::MemoryLocation::CpuToGpu,
+                &self.cores(),
+            )?;
+            buffer.fill(data)?;
+            Ok(buffer)
+        })
+        .collect::<Result<Vec<Buffer>, Box<dyn Error + Send + Sync>>>()?;
 
-            let (index_offset, cpu_offset, cpu_chunk_size) = memory_mappings[index];
-            let cpu_buffers = self.create_cpu_inputs(queue_family_indices, &input[index_offset])?;
+        let buffer_infos = (0..=input_buffers.len()).into_iter()
+            .map(|f| match f {
+                0 => [vk::DescriptorBufferInfo::builder()
+                    .buffer(output)
+                    .offset(cpu_offset)
+                    .range(cpu_chunk_size)
+                    .build()],
+                _ => [vk::DescriptorBufferInfo::builder()
+                    .buffer(input_buffers[f-1].buffer)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE)
+                    .build()],
+            })
+            .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
 
-            let buffer_infos = (0..=cpu_buffers.len()).into_iter()
-                .map(|f| match f {
-                    0 => [vk::DescriptorBufferInfo::builder()
-                        .buffer(cpu_buffer.buffer)
-                        .offset(cpu_offset)
-                        .range(cpu_chunk_size)
-                        .build()],
-                    _ => [vk::DescriptorBufferInfo::builder()
-                        .buffer(cpu_buffers[f-1].buffer)
-                        .offset(0)
-                        .range(vk::WHOLE_SIZE)
-                        .build()],
-                })
-                .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
+        let wds = buffer_infos.iter().enumerate()
+            .map(|(i, buf)| {
+                vk::WriteDescriptorSet::builder()
+                    .dst_set(*descriptor_set)
+                    .dst_binding(i as u32)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(buf)
+                    .build()
+            })
+            .collect::<Vec<vk::WriteDescriptorSet>>();
 
-            let wds = buffer_infos.iter().enumerate()
-                .map(|(i, buf)| {
-                    vk::WriteDescriptorSet::builder()
-                        .dst_set(command.descriptor_sets[index])
-                        .dst_binding(i as u32)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .buffer_info(buf)
-                        .build()
-                })
-                .collect::<Vec<vk::WriteDescriptorSet>>();
+        unsafe {
+            self.device.update_descriptor_sets(&wds, &[]);
+            self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
 
-            unsafe {
-                self.device.update_descriptor_sets(&wds, &[]);
-                self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
-
-                cpu_buffers.iter().for_each(|cpu| {
-                    self.device.cmd_copy_buffer(
-                        *command_buffer,
-                        cpu.buffer,
-                        cpu.buffer,
-                        &[vk::BufferCopy::builder()
-                            .src_offset(0)
-                            .dst_offset(0)
-                            .size(cpu.device_size)
-                            .build()
-                        ],
-                    )
-                });
-
-                self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
-                self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[command.descriptor_sets[index]], &[]);
-                self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
-
+            input_buffers.iter().for_each(|cpu| {
                 self.device.cmd_copy_buffer(
                     *command_buffer,
-                    cpu_buffer.buffer,
-                    cpu_buffer.buffer,
+                    cpu.buffer,
+                    cpu.buffer,
                     &[vk::BufferCopy::builder()
-                        .src_offset(cpu_offset)
-                        .dst_offset(cpu_offset)
-                        .size(cpu_chunk_size)
+                        .src_offset(0)
+                        .dst_offset(0)
+                        .size(cpu.device_size)
                         .build()
                     ],
-                );
-                self.device.end_command_buffer(*command_buffer)?;
-            }
+                )
+            });
 
-            Ok(cpu_buffers)
-        })
-        .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()
+            self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
+            self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[*descriptor_set], &[]);
+            self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
+
+            self.device.cmd_copy_buffer(
+                *command_buffer,
+                output,
+                output,
+                &[vk::BufferCopy::builder()
+                    .src_offset(cpu_offset)
+                    .dst_offset(cpu_offset)
+                    .size(cpu_chunk_size)
+                    .build()
+                ],
+            );
+            self.device.end_command_buffer(*command_buffer)?;
+        }
+
+        Ok(input_buffers)
     }
 
     fn execute<T: std::marker::Sync + std::clone::Clone>(
@@ -571,13 +546,13 @@ impl Compute {
         input: &[Vec<Vec<T>>],
         out_length: usize,
         shader: &Shader,
-    ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<&[T], Box<dyn Error + Send + Sync>> {
 
         let threads = &self.fences[0..input.len()];
 
         let size_in_bytes = out_length * input.len() * std::mem::size_of::<T>();
-        let cpu_buffer = Buffer::new(
-            "cpu buffer",
+        let output_buffer = Buffer::new(
+            "output buffer",
             &self.device,
             &self.allocator,
             size_in_bytes as vk::DeviceSize,
@@ -597,18 +572,16 @@ impl Compute {
                 &self.device,
             )?;
 
-            let memory_mappings = (0..command.command_buffers.len()).into_iter()
-                .map(|index| {
-                    let index_offset = command.command_buffers.len() * fence_idx + index;
-                    let cpu_offset = (cpu_buffer.device_size / input.len() as vk::DeviceSize) * index_offset as vk::DeviceSize;
-                    let cpu_chunk_size = cpu_buffer.device_size / input.len() as vk::DeviceSize;
-                    (index_offset, cpu_offset, cpu_chunk_size)
-                })
-                .collect::<Vec<(usize, vk::DeviceSize, vk::DeviceSize)>>();
-
             // even though buffers are not used, it must outlive queue submits and fence waiting.
             // otherwise, the memory "disappears" and will cause problems on discrete cards.
-            let _buffers = self.task(&command, shader, &self.cores(), &cpu_buffer, input, memory_mappings)?;
+            let _buffers = command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
+                let index_offset = command.command_buffers.len() * fence_idx + index;
+                let cpu_offset = (output_buffer.device_size / input.len() as vk::DeviceSize) * index_offset as vk::DeviceSize;
+                let cpu_chunk_size = output_buffer.device_size / input.len() as vk::DeviceSize;
+                let memory_mappings = (cpu_offset, cpu_chunk_size);
+                self.task(&command.descriptor_sets[index], command_buffer, shader, output_buffer.buffer, &input[index_offset], memory_mappings)
+            })
+            .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()?;
 
             let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
             unsafe {
@@ -621,11 +594,11 @@ impl Compute {
 
         })?;
 
-        let mapping = match cpu_buffer.allocation.mapped_ptr() {
+        let mapping = match output_buffer.allocation.mapped_ptr() {
             Some(c_ptr) => c_ptr.as_ptr() as *const T,
             None => return Err("could not map output buffer".to_string().into()),
         };
-        unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len()).to_vec()) }
+        unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len())) }
     }
 }
 
@@ -772,7 +745,6 @@ impl <'a, 'b> Buffer<'_, '_> {
         };
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
         println!("Copied {} to buffer with len {}", data.len(), (self.allocation.size() as usize / std::mem::size_of::<T>()));
-        assert_eq!(data.len(), (self.allocation.size() as usize / std::mem::size_of::<T>()));
         Ok(())
     }
 }
