@@ -582,7 +582,7 @@ impl Compute {
             &self.allocator,
             size_in_bytes as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-            gpu_allocator::MemoryLocation::CpuToGpu,
+            gpu_allocator::MemoryLocation::GpuToCpu,
             &self.cores(),
         )?;
 
