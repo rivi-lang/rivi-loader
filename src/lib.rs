@@ -566,7 +566,6 @@ impl Compute {
             let command = Command::new(
                 fence.phy_index,
                 shader.binding_count,
-                input.len() as u32,
                 &shader.set_layouts,
                 (input.len() / threads.len()) as u32,
                 &self.device,
@@ -662,13 +661,12 @@ impl <'a> Command<'_> {
     fn new(
         queue_family_index: u32,
         descriptor_count: u32,
-        max_sets: u32,
         set_layouts: &[vk::DescriptorSetLayout],
         command_buffer_count: u32,
         device: &'a ash::Device,
     ) -> Result<Command<'a>, Box<dyn Error + Send + Sync>> {
 
-        let descriptor_pool = Command::descriptor_pool(device, descriptor_count, max_sets)?;
+        let descriptor_pool = Command::descriptor_pool(device, descriptor_count, command_buffer_count)?;
 
         let descriptor_set_info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(descriptor_pool)
