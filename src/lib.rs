@@ -19,18 +19,14 @@ const SHADER_ENTRYPOINT: *const std::os::raw::c_char = concat!("main", "\0") as 
 pub fn new(
     debug: DebugOption
 ) -> Result<Vulkan, Box<dyn Error>> {
-    let vk = Vulkan::new(debug)?;
-    if vk.compute.is_empty() {
-        return Err("No compute capable devices".to_string().into())
-    }
-    Ok(vk)
+    Vulkan::new(debug)
 }
 
 pub struct Vulkan {
     _entry: ash::Entry, // Needs to outlive Instance and Devices.
     instance: ash::Instance, // Needs to outlive Devices.
     debug_layer: Option<DebugLayer>,
-    compute: Vec<Compute>,
+    compute: Option<Vec<Compute>>,
 }
 
 impl Vulkan {
@@ -88,7 +84,11 @@ impl Vulkan {
             },
         };
 
-        let compute = Self::logical_devices(&instance)?;
+        let computes = Self::logical_devices(&instance)?;
+        let compute = match computes.len() {
+            0 => None,
+            _ => Some(computes),
+        };
 
         Ok(Vulkan{_entry, instance, debug_layer, compute})
     }
@@ -238,9 +238,12 @@ impl Vulkan {
     ) -> Result<Vec<Shader<'_>>, Box<dyn Error>> {
         let binary = ash::util::read_spv(x)?;
         let bindings = Shader::module(&binary).map(|module| Shader::descriptor_set_layout_bindings(Shader::binding_count(&module)))?;
-        self.compute.iter()
-            .map(|f| Shader::create(&f.device, &bindings, &binary))
-            .collect()
+        match &self.compute {
+            Some(c) => c.iter()
+                .map(|f| Shader::create(&f.device, &bindings, &binary))
+                .collect(),
+            None => Err("No compute capable devices".to_string().into()),
+        }
     }
 
     pub fn compute<T: std::marker::Sync + std::clone::Clone>(
@@ -249,24 +252,34 @@ impl Vulkan {
         out_length: usize,
         shader: &Shader,
     ) -> Result<&[T], Box<dyn Error + Send + Sync>> {
-        self.compute.first().unwrap().execute(input, out_length, shader)
+        match &self.compute {
+            Some(c) => c.first().unwrap().execute(input, out_length, shader),
+            None => Err("No compute capable devices".to_string().into()),
+        }
     }
 
     pub fn device_count(
         &self
     ) -> usize {
-        self.compute.len()
+        match &self.compute {
+            Some(c) => c.len(),
+            None => 0,
+        }
     }
 
     pub fn threads(
         &self
     ) -> usize {
-        self.compute.iter().map(|d| d.fences.len()).sum::<usize>()
+        match &self.compute {
+            Some(c) => c.iter().map(|d| d.fences.len()).sum::<usize>(),
+            None => 0,
+        }
     }
 }
 
 impl Drop for Vulkan {
     fn drop(&mut self) {
+        self.compute = None;
         self.debug_layer = None;
         unsafe { self.instance.destroy_instance(None) }
     }
