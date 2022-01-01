@@ -259,14 +259,14 @@ impl Vulkan {
         }
     }
 
-    pub fn compute<T: std::marker::Sync + std::clone::Clone>(
+    pub fn compute<T: std::marker::Sync>(
         &self,
         input: &[Vec<Vec<T>>],
-        out_length: usize,
+        output: &mut [T],
         shader: &Shader,
-    ) -> Result<&[T], Box<dyn Error + Send + Sync>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match &self.compute {
-            Some(c) => c.first().unwrap().execute(input, out_length, shader),
+            Some(c) => c.first().unwrap().execute(input, output, shader),
             None => Err("No compute capable devices".to_string().into()),
         }
     }
@@ -567,21 +567,20 @@ impl Compute {
         Ok(input_buffers)
     }
 
-    fn execute<T: std::marker::Sync + std::clone::Clone>(
+    fn execute<T: std::marker::Sync>(
         &self,
         input: &[Vec<Vec<T>>],
-        out_length: usize,
+        output: &mut [T],
         shader: &Shader,
-    ) -> Result<&[T], Box<dyn Error + Send + Sync>> {
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
         let threads = &self.fences[0..input.len()];
 
-        let size_in_bytes = out_length * input.len() * std::mem::size_of::<T>();
         let output_buffer = Buffer::new(
             "output buffer",
             &self.device,
             &self.allocator,
-            size_in_bytes as vk::DeviceSize,
+            (output.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
             gpu_allocator::MemoryLocation::GpuToCpu,
             &self.cores(),
@@ -623,7 +622,8 @@ impl Compute {
             Some(c_ptr) => c_ptr.as_ptr() as *const T,
             None => return Err("could not map output buffer".to_string().into()),
         };
-        unsafe { Ok(std::slice::from_raw_parts::<T>(mapping, out_length * input.len())) }
+        unsafe { mapping.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
+        Ok(())
     }
 }
 
@@ -754,9 +754,7 @@ impl <'a, 'b> Buffer<'_, '_> {
             linear: true,
         })?;
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
-        let buf = Buffer { buffer, allocation, device_size, device, allocator };
-        println!("Memory taken: {:?} MB", (buf.allocation.offset() + buf.allocation.size()) / 1_048_576);
-        Ok(buf)
+        Ok(Buffer { buffer, allocation, device_size, device, allocator })
     }
 
     fn fill<T: Sized>(

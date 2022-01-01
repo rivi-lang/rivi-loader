@@ -27,10 +27,11 @@ fn main() {
 
     let run_timer = Instant::now();
     (0..bound).for_each(|x| {
-        let _result = vk.compute(&input, 1_146_024, &shader).unwrap();
+        let mut output = vec![0.0f32; 1_146_024 * vk.threads()];
+        vk.compute(&input, &mut output, &shader).unwrap();
         println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
-        // to check the results below against precomputed answer (slow)
-        //dbg!((_result.iter().sum::<f32>() - 490058.0*vk.threads() as f32).abs() < 0.1);
+        // to check the results below against precomputed answer
+        //dbg!((output.iter().sum::<f32>() - 490058.0*vk.threads() as f32).abs() < 0.1);
     });
     println!("App executions {}ms", run_timer.elapsed().as_millis());
 }
