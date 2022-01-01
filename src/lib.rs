@@ -1,6 +1,6 @@
 mod lib_test;
 
-use std::{error::Error, fmt, sync::RwLock, convert::TryInto};
+use std::{error::Error, fmt, sync::RwLock};
 
 use ash::vk;
 use gpu_allocator::vulkan::*;
@@ -409,7 +409,7 @@ impl <'a> Shader<'_> {
             None,
         ) }.map(|pipelines| pipelines[0]).map_err(|(_, err)| err)?;
 
-        Ok(Shader{module, pipeline_layout, pipeline, set_layouts, device, binding_count: bindings.len().try_into()?})
+        Ok(Shader{module, pipeline_layout, pipeline, set_layouts, device, binding_count: bindings.len() as u32})
     }
 }
 
@@ -488,7 +488,7 @@ impl Compute {
 
         let (cpu_offset, cpu_chunk_size) = memory_mapping;
         let input_buffers = input.iter().map(|data| {
-            let buffer = Buffer::new(
+            Buffer::new(
                 "cpu input",
                 &self.device,
                 &self.allocator,
@@ -496,9 +496,7 @@ impl Compute {
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
                 gpu_allocator::MemoryLocation::CpuToGpu,
                 &self.cores(),
-            )?;
-            buffer.fill(data)?;
-            Ok(buffer)
+            )?.fill(data)
         })
         .collect::<Result<Vec<Buffer>, Box<dyn Error + Send + Sync>>>()?;
 
@@ -618,11 +616,11 @@ impl Compute {
 
         })?;
 
-        let mapping = match output_buffer.allocation.mapped_ptr() {
-            Some(c_ptr) => c_ptr.as_ptr() as *const T,
+        let data_ptr = match output_buffer.allocation.mapped_ptr() {
+            Some(c_ptr) => c_ptr.as_ptr() as *mut T,
             None => return Err("could not map output buffer".to_string().into()),
         };
-        unsafe { mapping.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
+        unsafe { data_ptr.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
         Ok(())
     }
 }
@@ -758,15 +756,15 @@ impl <'a, 'b> Buffer<'_, '_> {
     }
 
     fn fill<T: Sized>(
-        &self,
+        self,
         data: &[T],
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let data_ptr = match self.allocation.mapped_ptr() {
             Some(c_ptr) => c_ptr.as_ptr() as *mut T,
             None => return Err("could not fill buffer".to_string().into()),
         };
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
-        Ok(())
+        Ok(self)
     }
 }
 
