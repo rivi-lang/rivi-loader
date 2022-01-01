@@ -115,8 +115,8 @@ impl Vulkan {
 
                 let (device_name, _) = Self::device_name(instance, pdevice);
                 println!("Found device: {}", device_name);
+                let device = Self::create_device(instance, pdevice)?;
                 let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
-                let device = Self::create_device(instance, pdevice, queue_infos.clone())?;
                 let fences = Self::create_fences(&device, queue_infos)?;
                 let allocator = Allocator::new(&AllocatorCreateDesc {
                     physical_device: pdevice,
@@ -143,10 +143,10 @@ impl Vulkan {
     unsafe fn queue_infos(
         instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
-    ) -> Vec<(usize, u32, Vec<f32>)> {
+    ) -> Vec<(usize, Vec<f32>)> {
         instance.get_physical_device_queue_family_properties(pdevice).iter().enumerate()
             .filter(|(_, prop)| prop.queue_flags.contains(vk::QueueFlags::COMPUTE))
-            .map(|(idx, prop)| (idx, prop.queue_count, vec![1.0f32; prop.queue_count as usize]))
+            .map(|(idx, prop)| (idx, vec![1.0f32; prop.queue_count as usize]))
             .collect()
     }
 
@@ -179,12 +179,12 @@ impl Vulkan {
 
     fn create_fences(
         device: &ash::Device,
-        queue_infos: Vec<(usize, u32, Vec<f32>)>,
+        queue_infos: Vec<(usize, Vec<f32>)>,
     ) -> Result<Vec<Fence>, Box<dyn Error>> {
-        Ok(queue_infos.into_iter().flat_map(|(phy_index, queue_count, _)| {
-            (0..queue_count).into_iter().map(|queue_index| {
+        Ok(queue_infos.into_iter().flat_map(|(phy_index, queue_priorities)| {
+            (0..queue_priorities.len()).into_iter().map(|queue_index| {
                 let vk_fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
-                let present_queue = unsafe { device.get_device_queue(phy_index as u32, queue_index) };
+                let present_queue = unsafe { device.get_device_queue(phy_index as u32, queue_index as u32) };
                 Ok(Fence{ fence: vk_fence, present_queue, phy_index: phy_index as u32 })
             })
             .collect::<Result<Vec<Fence>, Box<dyn Error>>>().into_iter()
@@ -196,7 +196,6 @@ impl Vulkan {
     fn create_device(
         instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
-        queue_infos: Vec<(usize, u32, Vec<f32>)>,
     ) -> Result<ash::Device, vk::Result> {
 
         let features = vk::PhysicalDeviceFeatures {
@@ -218,11 +217,12 @@ impl Vulkan {
             ext_names.push(EXT_PORTABILITY_SUBSET)
         }
 
-        let prio_copy = queue_infos.clone();
-        let queue_create_infos = queue_infos.into_iter().map(|(idx, _, priorities)| {
+        // See: https://github.com/MaikKlein/ash/issues/539
+        let priorities = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().map(|f| f.1).collect::<Vec<_>>();
+        let queue_create_infos = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().map(|(idx, _)| {
             vk::DeviceQueueCreateInfo::builder()
                 .queue_family_index(idx as u32)
-                .queue_priorities(&prio_copy[idx].2)
+                .queue_priorities(&priorities[idx])
                 .build()
         })
         .collect::<Vec<vk::DeviceQueueCreateInfo>>();
@@ -759,7 +759,6 @@ impl <'a, 'b> Buffer<'_, '_> {
             None => return Err("could not fill buffer".to_string().into()),
         };
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
-        println!("Copied {} to buffer with len {}", data.len(), (self.allocation.size() as usize / std::mem::size_of::<T>()));
         Ok(())
     }
 }
