@@ -24,10 +24,9 @@ fn main() {
     let vk = rivi_loader::new(DebugOption::None).unwrap();
 
     let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
-    let shaders = vk.load_shader(&mut cursor).unwrap();
-    let shader = shaders.first().unwrap();
+    let shader = vk.load_shader(&mut cursor).unwrap();
 
-    let result = vk.compute(input, out_length, shader).unwrap();
+    let result = vk.compute(input, out_length, &shader).unwrap();
 
     println!("Result: {:?}", result);
     assert_eq!(result, expected_output);

@@ -20,15 +20,14 @@ fn main() {
 
     // bind shader to a compute device
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
-    let shaders = vk.load_shader(&mut cursor).unwrap();
-    let shader = shaders.first().unwrap();
+    let shader = vk.load_shader(&mut cursor).unwrap();
 
     // create upper bound for iterations
     let bound = (150.0 / vk.threads() as f32).ceil() as i32;
 
     let run_timer = Instant::now();
     (0..bound).for_each(|x| {
-        let _result = vk.compute(&input, 1_146_024, shader).unwrap();
+        let _result = vk.compute(&input, 1_146_024, &shader).unwrap();
         println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
         // to check the results below against precomputed answer (slow)
         //dbg!((_result.iter().sum::<f32>() - 490058.0*vk.threads() as f32).abs() < 0.1);

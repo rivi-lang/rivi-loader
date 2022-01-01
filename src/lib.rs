@@ -242,13 +242,19 @@ impl Vulkan {
     pub fn load_shader<R: std::io::Read + std::io::Seek>(
         &self,
         x: &mut R
-    ) -> Result<Vec<Shader<'_>>, Box<dyn Error>> {
+    ) -> Result<Shader<'_>, Box<dyn Error>> {
         let binary = ash::util::read_spv(x)?;
         let bindings = Shader::module(&binary).map(|module| Shader::descriptor_set_layout_bindings(Shader::binding_count(&module)))?;
         match &self.compute {
-            Some(c) => c.iter()
-                .map(|f| Shader::create(&f.device, &bindings, &binary))
-                .collect(),
+            Some(c) => {
+                let shaders = c.iter()
+                    .map(|f| Shader::create(&f.device, &bindings, &binary))
+                    .collect::<Result<Vec<Shader>, Box<dyn Error>>>()?;
+                match shaders.into_iter().next() {
+                    Some(s) => Ok(s),
+                    None => Err("No compute capable devices".to_string().into()),
+                }
+            }
             None => Err("No compute capable devices".to_string().into()),
         }
     }
