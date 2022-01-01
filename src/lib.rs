@@ -222,9 +222,9 @@ impl Vulkan {
 
         // See: https://github.com/MaikKlein/ash/issues/539
         let priorities = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().map(|f| f.1).collect::<Vec<_>>();
-        let queue_create_infos = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().map(|(idx, _)| {
+        let queue_create_infos = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().enumerate().map(|(idx, (phy_index, _))| {
             vk::DeviceQueueCreateInfo::builder()
-                .queue_family_index(idx as u32)
+                .queue_family_index(phy_index as u32)
                 .queue_priorities(&priorities[idx])
                 .build()
         })
