@@ -19,7 +19,10 @@ const SHADER_ENTRYPOINT: *const std::os::raw::c_char = concat!("main", "\0") as 
 pub fn new(
     debug: DebugOption
 ) -> Result<Vulkan, Box<dyn Error>> {
-    Vulkan::new(debug)
+    let vk = Vulkan::new(debug)?;
+    let version = vk.version()?;
+    println!("Using Vulkan {:?}", version);
+    Ok(vk)
 }
 
 pub struct Vulkan {
