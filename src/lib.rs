@@ -600,20 +600,15 @@ impl Compute {
             unsafe {
                 self.device.queue_submit(fence.present_queue, &submits, fence.fence)?;
                 println!("submit {}ms", run_timer.elapsed().as_micros());
+                self.device.wait_for_fences(&[fence.fence], true, u64::MAX)?;
+                println!("wait {}ms", run_timer.elapsed().as_micros());
+                self.device.reset_fences(&[fence.fence])?;
+                println!("reset {}ms", run_timer.elapsed().as_micros());
             }
 
             Ok(())
 
         })?;
-
-        println!("submit collect {}ms", run_timer.elapsed().as_micros());
-
-        unsafe {
-            self.device.wait_for_fences(&self.fences.iter().map(|f| f.fence).collect::<Vec<vk::Fence>>(), true, u64::MAX)?;
-            println!("wait {}ms", run_timer.elapsed().as_micros());
-            self.device.reset_fences(&self.fences.iter().map(|f| f.fence).collect::<Vec<vk::Fence>>())?;
-            println!("reset {}ms", run_timer.elapsed().as_micros());
-        }
 
         println!("work {}ms", run_timer.elapsed().as_micros());
 
