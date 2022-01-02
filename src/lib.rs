@@ -529,36 +529,9 @@ impl Compute {
         unsafe {
             self.device.update_descriptor_sets(&wds, &[]);
             self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
-
-            input_buffers.iter().for_each(|cpu| {
-                self.device.cmd_copy_buffer(
-                    *command_buffer,
-                    cpu.buffer,
-                    cpu.buffer,
-                    &[vk::BufferCopy::builder()
-                        .src_offset(0)
-                        .dst_offset(0)
-                        .size(cpu.device_size)
-                        .build()
-                    ],
-                )
-            });
-
             self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
             self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[*descriptor_set], &[]);
             self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
-
-            self.device.cmd_copy_buffer(
-                *command_buffer,
-                output,
-                output,
-                &[vk::BufferCopy::builder()
-                    .src_offset(cpu_offset)
-                    .dst_offset(cpu_offset)
-                    .size(cpu_chunk_size)
-                    .build()
-                ],
-            );
             self.device.end_command_buffer(*command_buffer)?;
         }
 
