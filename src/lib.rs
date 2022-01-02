@@ -489,7 +489,7 @@ impl Compute {
 
         let (cpu_offset, cpu_chunk_size) = memory_mapping;
         let input_buffers = input.iter().map(|data| {
-            println!("inputs start {}ms", run_timer.elapsed().as_micros());
+            println!("inputs start {}qs", run_timer.elapsed().as_micros());
             let buffer = Buffer::new(
                 "cpu input",
                 &self.device,
@@ -499,12 +499,12 @@ impl Compute {
                 gpu_allocator::MemoryLocation::CpuToGpu,
                 &self.cores(),
             )?.fill(data)?;
-            println!("inputs fill {}ms", run_timer.elapsed().as_micros());
+            println!("inputs fill {}qs", run_timer.elapsed().as_micros());
             Ok(buffer)
         })
         .collect::<Result<Vec<Buffer>, Box<dyn Error + Send + Sync>>>()?;
 
-        println!("inputs collect {}ms", run_timer.elapsed().as_micros());
+        println!("inputs collect {}qs", run_timer.elapsed().as_micros());
 
         let buffer_infos = (0..=input_buffers.len()).into_iter()
             .map(|f| match f {
@@ -532,7 +532,7 @@ impl Compute {
             })
             .collect::<Vec<vk::WriteDescriptorSet>>();
 
-        println!("wds {}ms", run_timer.elapsed().as_micros());
+        println!("wds {}qs", run_timer.elapsed().as_micros());
 
         unsafe {
             self.device.update_descriptor_sets(&wds, &[]);
@@ -543,7 +543,7 @@ impl Compute {
             self.device.end_command_buffer(*command_buffer)?;
         }
 
-        println!("wds device {}ms", run_timer.elapsed().as_micros());
+        println!("wds device {}qs", run_timer.elapsed().as_micros());
 
         Ok(input_buffers)
     }
@@ -571,7 +571,7 @@ impl Compute {
 
         println!("output {}ms", run_timer.elapsed().as_millis());
 
-        threads.iter().enumerate().try_for_each(|(fence_idx, fence)| -> Result<(), Box<dyn Error + Send + Sync>> {
+        let fences = threads.iter().enumerate().map(|(fence_idx, fence)| {
 
             let command = Command::new(
                 fence.phy_index,
@@ -581,7 +581,7 @@ impl Compute {
                 &self.device,
             )?;
 
-            println!("command {}ms", run_timer.elapsed().as_micros());
+            println!("command {}qs", run_timer.elapsed().as_micros());
 
             // even though buffers are not used, it must outlive queue submits and fence waiting.
             // otherwise, the memory "disappears" and will cause problems on discrete cards.
@@ -594,23 +594,25 @@ impl Compute {
             })
             .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()?;
 
-            println!("buffers {}ms", run_timer.elapsed().as_micros());
+            println!("buffers {}qs", run_timer.elapsed().as_micros());
 
             let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
             unsafe {
                 self.device.queue_submit(fence.present_queue, &submits, fence.fence)?;
-                println!("submit {}ms", run_timer.elapsed().as_micros());
-                self.device.wait_for_fences(&[fence.fence], true, u64::MAX)?;
-                println!("wait {}ms", run_timer.elapsed().as_micros());
-                self.device.reset_fences(&[fence.fence])?;
-                println!("reset {}ms", run_timer.elapsed().as_micros());
+                println!("submit {}qs", run_timer.elapsed().as_micros());
             }
 
-            Ok(())
+            Ok(fence.fence)
 
-        })?;
+        })
+        .collect::<Result<Vec<vk::Fence>, Box<dyn Error + Send + Sync>>>()?;
 
-        println!("work {}ms", run_timer.elapsed().as_micros());
+        unsafe {
+            self.device.wait_for_fences(&fences, true, u64::MAX)?;
+            println!("wait {}qs", run_timer.elapsed().as_micros());
+            self.device.reset_fences(&fences)?;
+            println!("reset {}qs", run_timer.elapsed().as_micros());
+        };
 
         let data_ptr = match output_buffer.allocation.mapped_ptr() {
             Some(c_ptr) => c_ptr.as_ptr() as *mut T,
@@ -618,7 +620,7 @@ impl Compute {
         };
         unsafe { data_ptr.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
 
-        println!("copy {}ms", run_timer.elapsed().as_micros());
+        println!("copy {}qs", run_timer.elapsed().as_micros());
         Ok(())
     }
 }
