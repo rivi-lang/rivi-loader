@@ -119,10 +119,8 @@ impl Vulkan {
                 let (device_name, _) = Self::device_name(instance, pdevice);
                 println!("Found device: {}", device_name);
                 let device = Self::create_device(instance, pdevice)?;
-                let compute_queue_infos = unsafe { Self::queue_infos(instance, pdevice, QueueType::Compute) };
-                let fences = Self::create_fences(&device, compute_queue_infos)?;
-                let transfer_queue_infos = unsafe { Self::queue_infos(instance, pdevice, QueueType::TransferOnly) };
-                let transfer = Self::create_fences(&device, transfer_queue_infos)?;
+                let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
+                let fences = Self::create_fences(&device, queue_infos)?;
                 let allocator = Allocator::new(&AllocatorCreateDesc {
                     physical_device: pdevice,
                     device: device.clone(),
@@ -137,7 +135,7 @@ impl Vulkan {
                 println!("Supported subgroup operations: {:?}", sp.supported_operations);
                 println!("Supported subgroup stages: {:?}", sp.supported_stages);
 
-                Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, transfer, memory})
+                Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
 
             })
             .collect::<Result<Vec<Compute>, Box<dyn Error>>>()?.into_iter()
@@ -148,14 +146,9 @@ impl Vulkan {
     unsafe fn queue_infos(
         instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
-        queue_type: QueueType,
     ) -> Vec<(usize, Vec<f32>)> {
         instance.get_physical_device_queue_family_properties(pdevice).iter().enumerate()
-            .filter(|(_, prop)| match queue_type {
-                QueueType::Compute => prop.queue_flags.contains(vk::QueueFlags::COMPUTE),
-                QueueType::TransferOnly => prop.queue_flags.contains(vk::QueueFlags::TRANSFER) && !prop.queue_flags.contains(vk::QueueFlags::COMPUTE),
-                QueueType::Either => prop.queue_flags.contains(vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER),
-            })
+            .filter(|(_, prop)| prop.queue_flags.contains(vk::QueueFlags::COMPUTE))
             .map(|(idx, prop)| (idx, vec![1.0f32; prop.queue_count as usize]))
             .collect()
     }
@@ -228,8 +221,8 @@ impl Vulkan {
         }
 
         // See: https://github.com/MaikKlein/ash/issues/539
-        let priorities = unsafe { Self::queue_infos(instance, pdevice, QueueType::Either) }.into_iter().map(|f| f.1).collect::<Vec<_>>();
-        let queue_create_infos = unsafe { Self::queue_infos(instance, pdevice, QueueType::Either) }.into_iter().enumerate().map(|(idx, (phy_index, _))| {
+        let priorities = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().map(|f| f.1).collect::<Vec<_>>();
+        let queue_create_infos = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().enumerate().map(|(idx, (phy_index, _))| {
             vk::DeviceQueueCreateInfo::builder()
                 .queue_family_index(phy_index as u32)
                 .queue_priorities(&priorities[idx])
@@ -309,12 +302,6 @@ pub enum DebugOption {
     None,
     Validation,
     Debug,
-}
-
-enum QueueType {
-    Compute,
-    TransferOnly,
-    Either,
 }
 
 struct DebugLayer {
@@ -447,7 +434,6 @@ struct Compute {
     device: ash::Device,
     allocator: Option<RwLock<Allocator>>,
     fences: Vec<Fence>,
-    transfer: Vec<Fence>,
     memory: vk::PhysicalDeviceMemoryProperties,
 }
 
@@ -494,7 +480,6 @@ impl Compute {
         &self,
         descriptor_set: &vk::DescriptorSet,
         command_buffer: &vk::CommandBuffer,
-        transfer: &vk::CommandBuffer,
         shader: &Shader<'_>,
         output: vk::Buffer,
         input: &[Vec<T>],
@@ -547,7 +532,7 @@ impl Compute {
 
             input_buffers.iter().for_each(|cpu| {
                 self.device.cmd_copy_buffer(
-                    *transfer,
+                    *command_buffer,
                     cpu.buffer,
                     cpu.buffer,
                     &[vk::BufferCopy::builder()
@@ -564,7 +549,7 @@ impl Compute {
             self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
 
             self.device.cmd_copy_buffer(
-                *transfer,
+                *command_buffer,
                 output,
                 output,
                 &[vk::BufferCopy::builder()
@@ -609,16 +594,6 @@ impl Compute {
                 &self.device,
             )?;
 
-            let transfer = self.transfer.iter().map(|fence| {
-                Command::new(
-                    fence.phy_index,
-                    shader.binding_count,
-                    &shader.set_layouts,
-                    (input.len() / threads.len()) as u32,
-                    &self.device,
-                )
-            }).collect::<Result<Vec<Command>, Box<dyn Error + Send + Sync>>>()?;
-
             // even though buffers are not used, it must outlive queue submits and fence waiting.
             // otherwise, the memory "disappears" and will cause problems on discrete cards.
             let _buffers = command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
@@ -626,17 +601,7 @@ impl Compute {
                 let cpu_offset = (output_buffer.device_size / input.len() as vk::DeviceSize) * index_offset as vk::DeviceSize;
                 let cpu_chunk_size = output_buffer.device_size / input.len() as vk::DeviceSize;
                 let memory_mappings = (cpu_offset, cpu_chunk_size);
-                let copier = match transfer.first() {
-                    Some(c) => {
-                        match c.command_buffers.get(index) {
-                            Some(c) => c,
-                            None => command_buffer,
-                        }
-                    },
-                    None => command_buffer,
-                };
-
-                self.task(&command.descriptor_sets[index], command_buffer, copier, shader, output_buffer.buffer, &input[index_offset], memory_mappings)
+                self.task(&command.descriptor_sets[index], command_buffer, shader, output_buffer.buffer, &input[index_offset], memory_mappings)
             })
             .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()?;
 
