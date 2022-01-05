@@ -576,9 +576,9 @@ impl Compute {
         )?;
         println!("command {}ms", run_timer.elapsed().as_millis());
 
-        command.descriptor_sets.par_iter()
-            .zip(command.command_buffers.par_iter())
-            .zip(input.par_iter())
+        command.descriptor_sets.iter()
+            .zip(command.command_buffers.iter())
+            .zip(input.iter())
             .enumerate().map(|(idx, cmd)| {
                 self.task(
                     *cmd.0.0,
