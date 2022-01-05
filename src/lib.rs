@@ -3,7 +3,7 @@ mod lib_test;
 use std::{error::Error, fmt, sync::RwLock};
 
 use ash::vk;
-use gpu_allocator::vulkan::*;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 
 const LAYER_VALIDATION: *const std::os::raw::c_char = concat!("VK_LAYER_KHRONOS_validation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 const LAYER_DEBUG: *const std::os::raw::c_char = concat!("VK_LAYER_LUNARG_api_dump", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
@@ -19,13 +19,11 @@ pub fn new(
     debug: DebugOption
 ) -> Result<Vulkan, Box<dyn Error>> {
     let vk = Vulkan::new(debug)?;
-    let version = vk.version()?;
-    println!("Using Vulkan {:?}", version);
     Ok(vk)
 }
 
 pub struct Vulkan {
-    _entry: ash::Entry, // Needs to outlive Instance and Devices.
+    entry: ash::Entry, // Needs to outlive Instance and Devices.
     instance: ash::Instance, // Needs to outlive Devices.
     debug_layer: Option<DebugLayer>,
     compute: Option<Vec<Compute>>,
@@ -35,7 +33,7 @@ impl Vulkan {
 
     fn new(
         debug: DebugOption
-    ) -> Result<Vulkan, Box<dyn Error>> {
+    ) -> Result<Self, Box<dyn Error>> {
 
         let vk_layers = match debug {
             DebugOption::None => vec![],
@@ -62,10 +60,10 @@ impl Vulkan {
             }
         };
 
-        let _entry = unsafe { ash::Entry::load()? };
+        let entry = unsafe { ash::Entry::load()? };
 
         let instance = unsafe {
-            _entry.create_instance(&vk::InstanceCreateInfo::builder()
+            entry.create_instance(&vk::InstanceCreateInfo::builder()
                 .push_next(&mut info)
                 .application_info(&vk::ApplicationInfo {
                     api_version: vk::make_api_version(0, 1, 2, 0),
@@ -80,7 +78,7 @@ impl Vulkan {
         let debug_layer = match debug {
             DebugOption::None => None,
             _ => {
-                let loader = ash::extensions::ext::DebugUtils::new(&_entry, &instance);
+                let loader = ash::extensions::ext::DebugUtils::new(&entry, &instance);
                 let messenger = unsafe { loader.create_debug_utils_messenger(&info, None)? };
                 Some(DebugLayer{loader, messenger})
             },
@@ -92,13 +90,13 @@ impl Vulkan {
             _ => Some(computes),
         };
 
-        Ok(Vulkan{_entry, instance, debug_layer, compute})
+        Ok(Self{entry, instance, debug_layer, compute})
     }
 
-    fn version(
+    pub fn version(
         &self
     ) -> Result<(u32, u32, u32), Box<dyn Error>>  {
-        match self._entry.try_enumerate_instance_version()? {
+        match self.entry.try_enumerate_instance_version()? {
             Some(v) => Ok((vk::api_version_major(v), vk::api_version_minor(v), vk::api_version_patch(v))),
             None => Ok((vk::api_version_major(1), vk::api_version_minor(0), vk::api_version_patch(0))),
         }
@@ -148,7 +146,7 @@ impl Vulkan {
     ) -> Vec<(usize, Vec<f32>)> {
         instance.get_physical_device_queue_family_properties(pdevice).iter().enumerate()
             .filter(|(_, prop)| prop.queue_flags.contains(vk::QueueFlags::COMPUTE))
-            .map(|(idx, prop)| (idx, vec![1.0f32; prop.queue_count as usize]))
+            .map(|(idx, prop)| (idx, vec![1.0_f32; prop.queue_count as usize]))
             .collect()
     }
 
@@ -477,8 +475,8 @@ impl Compute {
     // it is used by vulkan
     fn task<T>(
         &self,
-        descriptor_set: &vk::DescriptorSet,
-        command_buffer: &vk::CommandBuffer,
+        descriptor_set: vk::DescriptorSet,
+        command_buffer: vk::CommandBuffer,
         shader: &Shader<'_>,
         output: vk::Buffer,
         input: &[Vec<T>],
@@ -487,7 +485,6 @@ impl Compute {
 
         let run_timer = std::time::Instant::now();
 
-        let (cpu_offset, cpu_chunk_size) = memory_mapping;
         let input_buffers = input.iter().map(|data| {
             println!("inputs start {}qs", run_timer.elapsed().as_micros());
             let buffer = Buffer::new(
@@ -510,8 +507,8 @@ impl Compute {
             .map(|f| match f {
                 0 => [vk::DescriptorBufferInfo::builder()
                     .buffer(output)
-                    .offset(cpu_offset)
-                    .range(cpu_chunk_size)
+                    .offset(memory_mapping.0)
+                    .range(memory_mapping.1)
                     .build()],
                 _ => [vk::DescriptorBufferInfo::builder()
                     .buffer(input_buffers[f-1].buffer)
@@ -524,7 +521,7 @@ impl Compute {
         let wds = buffer_infos.iter().enumerate()
             .map(|(i, buf)| {
                 vk::WriteDescriptorSet::builder()
-                    .dst_set(*descriptor_set)
+                    .dst_set(descriptor_set)
                     .dst_binding(i as u32)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(buf)
@@ -536,11 +533,11 @@ impl Compute {
 
         unsafe {
             self.device.update_descriptor_sets(&wds, &[]);
-            self.device.begin_command_buffer(*command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
-            self.device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
-            self.device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[*descriptor_set], &[]);
-            self.device.cmd_dispatch(*command_buffer, 1024, 1, 1);
-            self.device.end_command_buffer(*command_buffer)?;
+            self.device.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+            self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
+            self.device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[descriptor_set], &[]);
+            self.device.cmd_dispatch(command_buffer, 1024, 1, 1);
+            self.device.end_command_buffer(command_buffer)?;
         }
 
         println!("wds device {}qs", run_timer.elapsed().as_micros());
@@ -557,8 +554,6 @@ impl Compute {
 
         let run_timer = std::time::Instant::now();
 
-        let threads = &self.fences[0..input.len()];
-
         let output_buffer = Buffer::new(
             "output buffer",
             &self.device,
@@ -568,59 +563,51 @@ impl Compute {
             gpu_allocator::MemoryLocation::GpuToCpu,
             &self.cores(),
         )?;
-
+        let output_chunk_size = output_buffer.device_size / input.len() as vk::DeviceSize;
         println!("output {}ms", run_timer.elapsed().as_millis());
 
-        let fences = threads.iter().enumerate().map(|(fence_idx, fence)| {
+        let command = Command::new(
+            0,
+            shader.binding_count,
+            &shader.set_layouts,
+            input.len() as u32,
+            &self.device,
+        )?;
+        println!("command {}ms", run_timer.elapsed().as_millis());
 
-            let command = Command::new(
-                fence.phy_index,
-                shader.binding_count,
-                &shader.set_layouts,
-                (input.len() / threads.len()) as u32,
-                &self.device,
-            )?;
-
-            println!("command {}qs", run_timer.elapsed().as_micros());
-
-            // even though buffers are not used, it must outlive queue submits and fence waiting.
-            // otherwise, the memory "disappears" and will cause problems on discrete cards.
-            let _buffers = command.command_buffers.iter().enumerate().map(|(index, command_buffer)| {
-                let index_offset = command.command_buffers.len() * fence_idx + index;
-                let cpu_offset = (output_buffer.device_size / input.len() as vk::DeviceSize) * index_offset as vk::DeviceSize;
-                let cpu_chunk_size = output_buffer.device_size / input.len() as vk::DeviceSize;
-                let memory_mappings = (cpu_offset, cpu_chunk_size);
-                self.task(&command.descriptor_sets[index], command_buffer, shader, output_buffer.buffer, &input[index_offset], memory_mappings)
-            })
-            .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()?;
-
-            println!("buffers {}qs", run_timer.elapsed().as_micros());
-
-            let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
-            unsafe {
-                self.device.queue_submit(fence.present_queue, &submits, fence.fence)?;
-                println!("submit {}qs", run_timer.elapsed().as_micros());
-            }
-
-            Ok(fence.fence)
-
+        command.descriptor_sets.iter()
+            .zip(command.command_buffers.iter())
+            .zip(input.iter())
+            .enumerate().map(|(idx, cmd)| {
+                self.task(
+                    *cmd.0.0,
+                    *cmd.0.1,
+                    shader,
+                    output_buffer.buffer,
+                    cmd.1,
+                    (output_chunk_size * idx as vk::DeviceSize, output_chunk_size),
+                )
         })
-        .collect::<Result<Vec<vk::Fence>, Box<dyn Error + Send + Sync>>>()?;
-
-        unsafe {
-            self.device.wait_for_fences(&fences, true, u64::MAX)?;
+        .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()
+        .and_then(|_| unsafe {
+            println!("buffers {}qs", run_timer.elapsed().as_micros());
+            let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
+            self.device.queue_submit(self.fences[0].present_queue, &submits, self.fences[0].fence)?;
+            println!("submit {}qs", run_timer.elapsed().as_micros());
+            self.device.wait_for_fences(&[self.fences[0].fence], true, u64::MAX)?;
             println!("wait {}qs", run_timer.elapsed().as_micros());
-            self.device.reset_fences(&fences)?;
-            println!("reset {}qs", run_timer.elapsed().as_micros());
-        };
+            self.device.reset_fences(&[self.fences[0].fence])?;
+            Ok(())
+        })?;
+        println!("reset {}qs", run_timer.elapsed().as_micros());
 
         let data_ptr = match output_buffer.allocation.mapped_ptr() {
-            Some(c_ptr) => c_ptr.as_ptr() as *mut T,
+            Some(c_ptr) => c_ptr.as_ptr().cast::<T>(),
             None => return Err("could not map output buffer".to_string().into()),
         };
         unsafe { data_ptr.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
-
         println!("copy {}qs", run_timer.elapsed().as_micros());
+
         Ok(())
     }
 }
@@ -760,7 +747,7 @@ impl <'a, 'b> Buffer<'_, '_> {
         data: &[T],
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let data_ptr = match self.allocation.mapped_ptr() {
-            Some(c_ptr) => c_ptr.as_ptr() as *mut T,
+            Some(c_ptr) => c_ptr.as_ptr().cast::<T>(),
             None => return Err("could not fill buffer".to_string().into()),
         };
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
