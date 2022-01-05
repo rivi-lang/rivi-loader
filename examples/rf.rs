@@ -1,35 +1,67 @@
 use std::{error::Error, time::Instant};
 
-use rivi_loader::debug_layer::DebugOption;
-use rivi_loader::shader::Shader;
+use rivi_loader::DebugOption;
 
-
-const NUM: i32 = 32;
-
+/// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
+/// The implementation of this algorithm was derived from Python/Cython to APL, and
+/// then hand-translated from APL to SPIR-V.
+///
+/// The baseline used 150 iterations of the prediction. This file replicates
+/// that functionality by load-balancing it among all fences found.
+///
+/// The whole ordeal is further elaborated here: https://hal.inria.fr/hal-03155647/
 fn main() {
-
-    let input = load_input();
-
-    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Found {} compute device(s)", devices.len());
-    println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
-
-    // ensure the work is evenly split among cores
-    assert_eq!(NUM % devices.iter().map(|f| f.fences.len()).sum::<usize>() as i32, 0);
-
-    let compute = devices.first().unwrap();
-    let cores = &compute.fences;
-
+    // initialize vulkan process
+    let vk = rivi_loader::new(DebugOption::Validation).unwrap();
+    // bind shader to a compute device
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
-    let shader = Shader::new(compute, &mut cursor).unwrap();
+    let shader = vk.load_shader(&mut cursor).unwrap();
+
+    loop {
+        let a = batched(&vk, &shader);
+        let b = at_once(&vk, &shader);
+        println!("Batched runtime: {}ms", a);
+        println!("At once runtime: {}ms", b);
+    }
+}
+
+fn batched(vk: &rivi_loader::Vulkan, shader: &rivi_loader::Shader) -> u128 {
+
+    // replicate work among cores
+    let input = load_input(vk.threads());
+
+    // create upper bound for iterations
+    let bound = (150.0 / vk.threads() as f32).ceil() as i32;
+
+    (0..bound).map(|_| {
+
+        let mut output = vec![0.0f32; 1_146_024 * vk.threads()];
+
+        let run_timer = Instant::now();
+        vk.compute(&input, &mut output, shader).unwrap();
+        let end_timer = run_timer.elapsed().as_millis();
+
+        // to check the results below against precomputed answer
+        assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0*vk.threads() as f64);
+
+        end_timer
+    }).sum()
+}
+
+fn at_once(vk: &rivi_loader::Vulkan, shader: &rivi_loader::Shader) -> u128 {
+
+    // replicate work among cores
+    let input = load_input(150);
+    let mut output = vec![0.0f32; 1_146_024 * 150];
 
     let run_timer = Instant::now();
-    for x in 0..5 {
-        let _result = compute.execute(&input, 1146024, &shader, cores);
-        println!("App {} execute {}ms", x, run_timer.elapsed().as_millis());
-        //dbg!((_result.iter().sum::<f32>() - 490058.0*NUM as f32).abs() < 0.1);
-    }
-    println!("App executions {}ms", run_timer.elapsed().as_millis());
+    vk.compute(&input, &mut output, shader).unwrap();
+    let end_timer = run_timer.elapsed().as_millis();
+
+    // to check the results below against precomputed answer
+    assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0*150 as f64);
+
+    end_timer
 }
 
 fn csv(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {
@@ -46,7 +78,7 @@ fn csv(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn load_input() -> Vec<Vec<Vec<f32>>> {
+fn load_input(chunks: usize) -> Vec<Vec<Vec<f32>>> {
 
     let mut feature: Vec<f32> = Vec::new();
     if let Err(err) = csv("examples/rf/dataset/feature.csv", &mut feature) {
@@ -78,7 +110,7 @@ fn load_input() -> Vec<Vec<Vec<f32>>> {
         panic!("error running example: {}", err);
     }
 
-    (0..NUM).into_iter().map(|_| vec![
+    (0..chunks).into_iter().map(|_| vec![
         left.clone(),
         right.clone(),
         th.clone(),

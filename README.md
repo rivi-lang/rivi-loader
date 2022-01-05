@@ -1,31 +1,34 @@
 # rivi-loader
 
+[![Latest version](https://img.shields.io/crates/v/rivi-loader.svg)](https://crates.io/crates/rivi-loader)
+[![Docs](https://docs.rs/rivi-loader/badge.svg)](https://docs.rs/rivi-loader/)
+[![LICENSE](https://img.shields.io/badge/license-GPL-blue.svg)](LICENSE-GPL)
+
+```toml
+[dependencies]
+rivi-loader = "0.1.4"
+```
+
 rivi-loader is a Vulkan-based program loader for GPGPU applications. It builds on the Rust-based Vulkan wrapper [ash](https://github.com/MaikKlein/ash). The project is a part of research agenda of interoperable GPU computing, that is, an effort to evaluate how Vulkan could be utilized to replace GLSL and CUDA accelerated programs with Vulkan.
 
 ## Example
 
 ```Rust
 fn main() {
-    let a = vec![1.0, 2.0];
-    let b = vec![3.0, 4.0];
+    let a: Vec<f32> = vec![1.0, 2.0];
+    let b: Vec<f32> = vec![3.0, 4.0];
     let input = &vec![vec![a, b]];
-    let expected_output = vec![4.0, 6.0];
-    let out_length = expected_output.len();
+    let mut output = vec![0.0f32; 2];
 
-    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Found {} compute device(s)", devices.len());
-    println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
-
-    let compute = devices.first().unwrap();
-    let cores = &compute.fences[0..1];
+    let vk = rivi_loader::new(DebugOption::None).unwrap();
 
     let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
-    let shader = Shader::new(compute, &mut cursor).unwrap();
+    let shader = vk.load_shader(&mut cursor).unwrap();
 
-    let result = compute.execute(input, out_length, &shader, cores);
+    vk.compute(input, &mut output, &shader).unwrap();
 
-    println!("Result: {:?}", result);
-    assert_eq!(result, expected_output);
+    println!("Result: {:?}", output);
+    assert_eq!(output, vec![4.0, 6.0]);
 }
 ```
 
@@ -38,13 +41,14 @@ The project is aimed as an example repository from which motivated people can us
 ## Features
 
 - lifetime management for Vulkan resources
-- GPU resources exposed as "cores" (queue family) and "threads" (queues) for per-application performance granularity
 - interoperable platform support across operating systems and graphics cards
+- multi-gpu support (mixing AMD and Nvidia on a single machine is OK)
 
 ## Current limitations (to be addressed)
 
 - output buffer dimensions have to be statically known and oftentimes hand-written, no type inference is given at the moment
 - memory limitations are not endorsed, which means **you may run out of memory and hang your computer**
+- this is only a loader program, it assumes you can write your own compute kernels
 
 ## Installation
 

@@ -1,25 +1,18 @@
-use rivi_loader::{debug_layer::DebugOption, shader::Shader};
-
+use rivi_loader::DebugOption;
 
 fn main() {
-    let a = vec![1.0, 2.0];
-    let b = vec![3.0, 4.0];
+    let a: Vec<f32> = vec![1.0, 2.0];
+    let b: Vec<f32> = vec![3.0, 4.0];
     let input = &vec![vec![a, b]];
-    let expected_output = vec![4.0, 6.0];
-    let out_length = expected_output.len();
+    let mut output = vec![0.0f32; 2];
 
-    let (_vulkan, devices) = rivi_loader::new(DebugOption::None).unwrap();
-    println!("Found {} compute device(s)", devices.len());
-    println!("Found {} core(s)", devices.iter().map(|f| f.fences.len()).sum::<usize>());
-
-    let compute = devices.first().unwrap();
-    let cores = &compute.fences[0..1];
+    let vk = rivi_loader::new(DebugOption::None).unwrap();
 
     let mut cursor = std::io::Cursor::new(&include_bytes!("./repl/shader/sum.spv")[..]);
-    let shader = Shader::new(compute, &mut cursor).unwrap();
+    let shader = vk.load_shader(&mut cursor).unwrap();
 
-    let result = compute.execute(input, out_length, &shader, cores);
+    vk.compute(input, &mut output, &shader).unwrap();
 
-    println!("Result: {:?}", result);
-    assert_eq!(result, expected_output);
+    println!("Result: {:?}", output);
+    assert_eq!(output, vec![4.0, 6.0]);
 }
