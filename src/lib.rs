@@ -4,6 +4,7 @@ use std::{error::Error, fmt, sync::RwLock};
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use rayon::prelude::*;
 
 const LAYER_VALIDATION: *const std::os::raw::c_char = concat!("VK_LAYER_KHRONOS_validation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 const LAYER_DEBUG: *const std::os::raw::c_char = concat!("VK_LAYER_LUNARG_api_dump", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
@@ -575,9 +576,9 @@ impl Compute {
         )?;
         println!("command {}ms", run_timer.elapsed().as_millis());
 
-        command.descriptor_sets.iter()
-            .zip(command.command_buffers.iter())
-            .zip(input.iter())
+        command.descriptor_sets.par_iter()
+            .zip(command.command_buffers.par_iter())
+            .zip(input.par_iter())
             .enumerate().map(|(idx, cmd)| {
                 self.task(
                     *cmd.0.0,
@@ -588,7 +589,7 @@ impl Compute {
                     (output_chunk_size * idx as vk::DeviceSize, output_chunk_size),
                 )
         })
-        .collect::<Result<Vec<Vec<Buffer>>, Box<dyn Error + Send + Sync>>>()
+        .collect::<Result<Vec<_>, _>>()
         .and_then(|_| unsafe {
             println!("buffers {}qs", run_timer.elapsed().as_micros());
             let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
