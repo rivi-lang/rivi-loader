@@ -484,10 +484,7 @@ impl Compute {
         memory_mapping: (vk::DeviceSize, vk::DeviceSize),
     ) -> Result<Vec<Buffer>, Box<dyn Error + Send + Sync>> {
 
-        let run_timer = std::time::Instant::now();
-
         let input_buffers = input.iter().map(|data| {
-            println!("inputs start {}qs", run_timer.elapsed().as_micros());
             let buffer = Buffer::new(
                 "cpu input",
                 &self.device,
@@ -497,12 +494,9 @@ impl Compute {
                 gpu_allocator::MemoryLocation::CpuToGpu,
                 &self.cores(),
             )?.fill(data)?;
-            println!("inputs fill {}qs", run_timer.elapsed().as_micros());
             Ok(buffer)
         })
         .collect::<Result<Vec<Buffer>, Box<dyn Error + Send + Sync>>>()?;
-
-        println!("inputs collect {}qs", run_timer.elapsed().as_micros());
 
         let buffer_infos = (0..=input_buffers.len()).into_iter()
             .map(|f| match f {
@@ -530,8 +524,6 @@ impl Compute {
             })
             .collect::<Vec<vk::WriteDescriptorSet>>();
 
-        println!("wds {}qs", run_timer.elapsed().as_micros());
-
         unsafe {
             self.device.update_descriptor_sets(&wds, &[]);
             self.device.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
@@ -540,8 +532,6 @@ impl Compute {
             self.device.cmd_dispatch(command_buffer, 1024, 1, 1);
             self.device.end_command_buffer(command_buffer)?;
         }
-
-        println!("wds device {}qs", run_timer.elapsed().as_micros());
 
         Ok(input_buffers)
     }
@@ -553,8 +543,6 @@ impl Compute {
         shader: &Shader,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
-        let run_timer = std::time::Instant::now();
-
         let output_buffer = Buffer::new(
             "output buffer",
             &self.device,
@@ -565,7 +553,6 @@ impl Compute {
             &self.cores(),
         )?;
         let output_chunk_size = output_buffer.device_size / input.len() as vk::DeviceSize;
-        println!("output {}ms", run_timer.elapsed().as_millis());
 
         let command = Command::new(
             0,
@@ -574,7 +561,6 @@ impl Compute {
             input.len() as u32,
             &self.device,
         )?;
-        println!("command {}ms", run_timer.elapsed().as_millis());
 
         command.descriptor_sets.iter()
             .zip(command.command_buffers.iter())
@@ -591,23 +577,18 @@ impl Compute {
         })
         .collect::<Result<Vec<_>, _>>()
         .and_then(|_| unsafe {
-            println!("buffers {}qs", run_timer.elapsed().as_micros());
             let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
             self.device.queue_submit(self.fences[0].present_queue, &submits, self.fences[0].fence)?;
-            println!("submit {}qs", run_timer.elapsed().as_micros());
             self.device.wait_for_fences(&[self.fences[0].fence], true, u64::MAX)?;
-            println!("wait {}qs", run_timer.elapsed().as_micros());
             self.device.reset_fences(&[self.fences[0].fence])?;
             Ok(())
         })?;
-        println!("reset {}qs", run_timer.elapsed().as_micros());
 
         let data_ptr = match output_buffer.allocation.mapped_ptr() {
             Some(c_ptr) => c_ptr.as_ptr().cast::<T>(),
             None => return Err("could not map output buffer".to_string().into()),
         };
         unsafe { data_ptr.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
-        println!("copy {}qs", run_timer.elapsed().as_micros());
 
         Ok(())
     }
