@@ -562,9 +562,9 @@ impl Compute {
             &self.device,
         )?;
 
-        command.descriptor_sets.iter()
-            .zip(command.command_buffers.iter())
-            .zip(input.iter())
+        command.descriptor_sets.par_iter()
+            .zip(command.command_buffers.par_iter())
+            .zip(input.par_iter())
             .enumerate().map(|(idx, cmd)| {
                 self.task(
                     *cmd.0.0,

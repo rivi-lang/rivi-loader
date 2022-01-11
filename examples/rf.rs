@@ -12,7 +12,7 @@ use rivi_loader::DebugOption;
 /// The whole ordeal is further elaborated here: https://hal.inria.fr/hal-03155647/
 fn main() {
     // initialize vulkan process
-    let vk = rivi_loader::new(DebugOption::Validation).unwrap();
+    let vk = rivi_loader::new(DebugOption::None).unwrap();
     // bind shader to a compute device
     let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
     let shader = vk.load_shader(&mut cursor).unwrap();
