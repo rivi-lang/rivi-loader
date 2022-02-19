@@ -584,10 +584,7 @@ impl Compute {
             Ok(())
         })?;
 
-        let data_ptr = match output_buffer.allocation.mapped_ptr() {
-            Some(c_ptr) => c_ptr.as_ptr().cast::<T>(),
-            None => return Err("could not map output buffer".to_string().into()),
-        };
+        let data_ptr = output_buffer.c_ptr.as_ptr().cast::<T>();
         unsafe { data_ptr.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
 
         Ok(())
@@ -685,8 +682,9 @@ impl <'a> Drop for Command<'a> {
 
 struct Buffer<'a, 'b>  {
     buffer: vk::Buffer,
-    allocation: Allocation,
+    allocation: Option<Allocation>,
     device_size: vk::DeviceSize,
+    c_ptr: std::ptr::NonNull<std::ffi::c_void>,
 
     device: &'a ash::Device,
     allocator: &'b Option<RwLock<Allocator>>,
@@ -720,18 +718,16 @@ impl <'a, 'b> Buffer<'_, '_> {
             location,
             linear: true,
         })?;
+        let c_ptr = allocation.mapped_ptr().unwrap();
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
-        Ok(Buffer { buffer, allocation, device_size, device, allocator })
+        Ok(Buffer { buffer, allocation: Some(allocation), c_ptr, device_size, device, allocator })
     }
 
     fn fill<T: Sized>(
         self,
         data: &[T],
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let data_ptr = match self.allocation.mapped_ptr() {
-            Some(c_ptr) => c_ptr.as_ptr().cast::<T>(),
-            None => return Err("could not fill buffer".to_string().into()),
-        };
+        let data_ptr = self.c_ptr.as_ptr().cast::<T>();
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
         Ok(self)
     }
@@ -741,7 +737,7 @@ impl <'a, 'b> Drop for Buffer<'a, 'b> {
     fn drop(&mut self) {
         let lock = self.allocator.as_ref().unwrap();
         let mut malloc = lock.write().unwrap();
-        malloc.free(self.allocation.to_owned()).unwrap();
+        malloc.free(self.allocation.take().unwrap()).unwrap();
         unsafe { self.device.destroy_buffer(self.buffer, None) };
     }
 }
