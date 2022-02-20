@@ -110,12 +110,11 @@ impl Vulkan {
         Ok(pdevices.into_iter()
             .filter(|pdevice| {
                 let (_, properties) = Self::device_name(instance, *pdevice);
+                let sp = Self::subgroup_properties(instance, *pdevice);
                 properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
+                && sp.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
             })
             .map(|pdevice| {
-
-                let (device_name, _) = Self::device_name(instance, pdevice);
-                println!("Found device: {}", device_name);
                 let device = Self::create_device(instance, pdevice)?;
                 let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
                 let fences = Self::create_fences(&device, queue_infos)?;
@@ -127,11 +126,6 @@ impl Vulkan {
                     buffer_device_address: false,
                 })?;
                 let memory = unsafe { instance.get_physical_device_memory_properties(pdevice) };
-
-                let sp = Self::subgroup_properties(instance, pdevice);
-                println!("Subgroup size of {} is: {:?}", device_name, sp.subgroup_size);
-                println!("Supported subgroup operations: {:?}", sp.supported_operations);
-                println!("Supported subgroup stages: {:?}", sp.supported_stages);
 
                 Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
 
@@ -215,7 +209,7 @@ impl Vulkan {
         ];
 
         if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-            ext_names.push(EXT_PORTABILITY_SUBSET)
+            ext_names.push(EXT_PORTABILITY_SUBSET);
         }
 
         // See: https://github.com/MaikKlein/ash/issues/539
@@ -247,7 +241,7 @@ impl Vulkan {
             Some(c) => {
                 let shaders = c.iter()
                     .map(|f| Shader::create(&f.device, &bindings, &binary))
-                    .collect::<Result<Vec<Shader>, Box<dyn Error>>>()?;
+                    .collect::<Result<Vec<Shader<'_>>, Box<dyn Error>>>()?;
                 match shaders.into_iter().next() {
                     Some(s) => Ok(s),
                     None => Err("No compute capable devices".to_string().into()),
@@ -261,7 +255,7 @@ impl Vulkan {
         &self,
         input: &[Vec<Vec<T>>],
         output: &mut [T],
-        shader: &Shader,
+        shader: &Shader<'_>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match &self.compute {
             Some(c) => c.first().unwrap().execute(input, output, shader),
@@ -285,6 +279,43 @@ impl Vulkan {
             Some(c) => c.iter().map(|d| d.fences.len()).sum::<usize>(),
             None => 0,
         }
+    }
+}
+
+impl fmt::Display for Vulkan {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "cpu_logical_cores: {}", std::thread::available_parallelism().unwrap().get());
+        let pdevices = unsafe { self.instance.enumerate_physical_devices().unwrap() };
+        writeln!(f, "gpu_device_count: {}", pdevices.len());
+        pdevices.into_iter()
+            .filter(|pdevice| {
+                let (_, properties) = Self::device_name(&self.instance, *pdevice);
+                let sp = Self::subgroup_properties(&self.instance, *pdevice);
+                properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
+                && sp.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
+            })
+            .for_each(|pdevice| {
+
+                let (device_name, properties) = Self::device_name(&self.instance, pdevice);
+                writeln!(f, "name: {}", device_name);
+                writeln!(f, "type: {:?}", properties.device_type);
+
+                let queue_infos = unsafe { Self::queue_infos(&self.instance, pdevice) };
+                writeln!(f, "queues: {:?}", queue_infos);
+                let memory = unsafe { self.instance.get_physical_device_memory_properties(pdevice) };
+
+                let sp = Self::subgroup_properties(&self.instance, pdevice);
+                writeln!(f, "subgroup_size: {:?}", sp.subgroup_size);
+                writeln!(f, "subgroup_operations: {:?}", sp.supported_operations);
+
+                memory.memory_heaps.iter()
+                    .filter(|mh| mh.size.ne(&0))
+                    .enumerate()
+                    .for_each(|(idx, mh)| {
+                        writeln!(f, "memory_heap: {{ index: {}, size: {:?} GiB }}", idx, mh.size / 1_073_741_824);
+                    });
+            });
+        write!(f, "")
     }
 }
 
@@ -482,7 +513,7 @@ impl Compute {
         output: vk::Buffer,
         input: &[Vec<T>],
         memory_mapping: (vk::DeviceSize, vk::DeviceSize),
-    ) -> Result<Vec<Buffer>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>> {
 
         let input_buffers = input.iter().map(|data| {
             let buffer = Buffer::new(
@@ -496,7 +527,7 @@ impl Compute {
             )?.fill(data)?;
             Ok(buffer)
         })
-        .collect::<Result<Vec<Buffer>, Box<dyn Error + Send + Sync>>>()?;
+        .collect::<Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>>>()?;
 
         let buffer_infos = (0..=input_buffers.len()).into_iter()
             .map(|f| match f {
@@ -540,7 +571,7 @@ impl Compute {
         &self,
         input: &[Vec<Vec<T>>],
         output: &mut [T],
-        shader: &Shader,
+        shader: &Shader<'_>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
         let output_buffer = Buffer::new(
