@@ -263,15 +263,6 @@ impl Vulkan {
         }
     }
 
-    pub fn device_count(
-        &self
-    ) -> usize {
-        match &self.compute {
-            Some(c) => c.len(),
-            None => 0,
-        }
-    }
-
     pub fn threads(
         &self
     ) -> usize {
@@ -286,6 +277,7 @@ impl fmt::Display for Vulkan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "cpu_logical_cores: {}", std::thread::available_parallelism().unwrap().get());
         let pdevices = unsafe { self.instance.enumerate_physical_devices().unwrap() };
+        writeln!(f, "f32_size: {}", std::mem::size_of::<f32>());
         writeln!(f, "gpu_device_count: {}", pdevices.len());
         pdevices.into_iter()
             .filter(|pdevice| {
@@ -301,19 +293,29 @@ impl fmt::Display for Vulkan {
                 writeln!(f, "type: {:?}", properties.device_type);
 
                 let queue_infos = unsafe { Self::queue_infos(&self.instance, pdevice) };
-                writeln!(f, "queues: {:?}", queue_infos);
+                writeln!(f, "queue_size: {:?}", queue_infos.len());
+                let queue_str = queue_infos.iter()
+                    .map(|f| {
+                        format!("{} {}", f.0, f.1.len())
+                    })
+                    .collect::<Vec<String>>();
+                writeln!(f, "queues: {:?}", queue_str);
                 let memory = unsafe { self.instance.get_physical_device_memory_properties(pdevice) };
 
                 let sp = Self::subgroup_properties(&self.instance, pdevice);
                 writeln!(f, "subgroup_size: {:?}", sp.subgroup_size);
                 writeln!(f, "subgroup_operations: {:?}", sp.supported_operations);
 
-                memory.memory_heaps.iter()
+                writeln!(f, "memory_heap_count: {}", memory.memory_heap_count);
+                let mem_str = memory.memory_heaps.iter()
                     .filter(|mh| mh.size.ne(&0))
                     .enumerate()
-                    .for_each(|(idx, mh)| {
-                        writeln!(f, "memory_heap: {{ index: {}, size: {:?} GiB }}", idx, mh.size / 1_073_741_824);
-                    });
+                    .map(|(idx, mh)| {
+                        format!("{} {}", idx, mh.size / 1_073_741_824)
+                    })
+                    .collect::<Vec<String>>();
+                writeln!(f, "memory_heaps: {:?}", mem_str);
+
             });
         write!(f, "")
     }
