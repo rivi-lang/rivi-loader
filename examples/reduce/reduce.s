@@ -10,6 +10,7 @@
     OpCapability GroupNonUniformQuad
     OpCapability GroupNonUniformVote
     OpCapability Groups
+    OpCapability VariablePointersStorageBuffer
 
     OpCapability VulkanMemoryModel
 
@@ -55,6 +56,7 @@
     %uint_2 = OpConstant %1 2
     %uint_3 = OpConstant %1 3
     %uint_5 = OpConstant %1 5
+    %uint_32 = OpConstant %1 32
     %uint_64 = OpConstant %1 64
 
     %float_0 = OpConstant %float 0
@@ -101,25 +103,58 @@
     %NonPrivatePointer = OpConstant %1 0x20
     %UniformMemory = OpConstant %1 0x40
 
+    %apply_signature = OpTypeFunction %bool %_ptr_Uniform_float
+
     %main = OpFunction %void None %11
     %16 = OpLabel
-        %sgs = OpLoad %1 %SubgroupSize
-        %sgi = OpLoad %1 %SubgroupID
-        %sgli = OpLoad %1 %SubgroupLocalID
 
         ; invocation id ptr, "thread" id
         %52 = OpAccessChain %wg %invocation_id %uint_0
         %53 = OpLoad %1 %52
 
         ; assign an element from input vector to this thread
-        %63 = OpAccessChain %_ptr_Uniform_float %input %uint_0 %53
-        %64 = OpLoad %float %63
+        %60 = OpAccessChain %_ptr_Uniform_float %input %uint_0 %53
+        %node = OpFunctionCall %bool %apply %60
+
+        %osgs = OpLoad %1 %SubgroupSize
+        %new_dest = OpUDiv %1 %53 %osgs
+        %new_60 = OpAccessChain %_ptr_Uniform_float %out %uint_0 %new_dest
+
+        OpSelectionMerge %leader_end2 None
+        OpBranchConditional %node %leader_t2 %leader_f2
+        %leader_t2 = OpLabel ; if
+
+            %node2 = OpFunctionCall %bool %apply %new_60
+
+            OpBranch %leader_end2
+        %leader_f2 = OpLabel ; else
+            OpBranch %leader_end2
+        %leader_end2 = OpLabel ; end
+
+    OpReturn
+    OpFunctionEnd
+
+    %apply = OpFunction %bool None %apply_signature
+    %63 = OpFunctionParameter %_ptr_Uniform_float
+    %apply_label = OpLabel
+        %iter = OpVariable %_ptr_Function_uint Function %uint_0
+
+        %sgs = OpLoad %1 %SubgroupSize
+        %sgi = OpLoad %1 %SubgroupID
+        %sgli = OpLoad %1 %SubgroupLocalID
+
+        ; invocation id ptr, "thread" id
+        %inner_52 = OpAccessChain %wg %invocation_id %uint_0
+        %inner_53 = OpLoad %1 %inner_52
 
         ; subgroup (sometimes called "warp") reduce
         ;
         ; each thread in a subgroup receives the sum of each
         ; threads' value in register %63
         %sum = OpGroupNonUniformFAdd %float %uint_3 Reduce %63
+
+
+        %56 = OpSLessThan %bool %inner_53 %uint_2
 
         ; now each thread in a subgroup holds the sum value
         ; in its cache, but we only need and want "some"
@@ -136,7 +171,7 @@
             ; is by dividing the global thread ID by the device's subgroup size
             ; i.e., the 32nd thread will get an index of 1 (32 / 32), which
             ; corresponds to the second memory slot in the global memory
-            %dest = OpUDiv %1 %53 %sgs
+            %dest = OpUDiv %1 %inner_53 %sgs
             %sync_dest = OpAccessChain %_ptr_Uniform_float %out %uint_0 %dest
             OpStore %sync_dest %sum
 
@@ -145,5 +180,5 @@
             OpBranch %leader_end
         %leader_end = OpLabel ; end
 
-    OpReturn
+        OpReturnValue %56
     OpFunctionEnd
