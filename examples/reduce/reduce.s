@@ -44,6 +44,8 @@
     OpDecorate %SubgroupID Flat
     OpDecorate %SubgroupID BuiltIn SubgroupId
 
+    OpDecorate %spec_constant_1 SpecId 0
+
 ; All types, variables, and constants
     %1 = OpTypeInt 32 0
     %void = OpTypeVoid
@@ -92,6 +94,10 @@
     %_ptr_Uniform_float = OpTypePointer StorageBuffer %float
     %_ptr_Uniform_bool = OpTypePointer StorageBuffer %bool
     %_ptr_Function_float = OpTypePointer Function %float
+
+; Spec Const
+
+    %spec_constant_1 = OpSpecConstant %1 1
 
 ; Some access flags
     %none = OpConstant %1 0x0
@@ -154,7 +160,7 @@
         %sum = OpGroupNonUniformFAdd %float %uint_3 Reduce %63
 
 
-        %56 = OpSLessThan %bool %inner_53 %uint_2
+        %56 = OpSLessThan %bool %inner_53 %spec_constant_1
 
         ; now each thread in a subgroup holds the sum value
         ; in its cache, but we only need and want "some"

@@ -233,14 +233,39 @@ impl Vulkan {
 
     pub fn load_shader<R: std::io::Read + std::io::Seek>(
         &self,
-        x: &mut R
+        x: &mut R,
+        specializations: Option<Vec<Vec<u8>>>,
     ) -> Result<Shader<'_>, Box<dyn Error>> {
         let binary = ash::util::read_spv(x)?;
         let bindings = Shader::module(&binary).map(|module| Shader::descriptor_set_layout_bindings(Shader::binding_count(&module)))?;
         match &self.compute {
             Some(c) => {
                 let shaders = c.iter()
-                    .map(|f| Shader::create(&f.device, &bindings, &binary))
+                    .enumerate()
+                    .map(|(idx, f)| {
+                        match &specializations {
+                            Some(specs) => {
+                                let maps = (0..specs.len())
+                                    .into_iter()
+                                    .map(|id| {
+                                        vk::SpecializationMapEntry::builder()
+                                            .constant_id(id as u32)
+                                            .offset(0)
+                                            .size(1)
+                                            .build()
+                                    })
+                                    .collect::<Vec<_>>();
+                                let spec = vk::SpecializationInfo::builder()
+                                    .data(specs.get(idx).unwrap())
+                                    .map_entries(&maps);
+                                Shader::create(&f.device, &bindings, &binary, spec)
+                            },
+                            None => {
+                                let spec = vk::SpecializationInfo::builder();
+                                Shader::create(&f.device, &bindings, &binary, spec)
+                            },
+                        }
+                    })
                     .collect::<Result<Vec<Shader<'_>>, Box<dyn Error>>>()?;
                 match shaders.into_iter().next() {
                     Some(s) => Ok(s),
@@ -390,6 +415,15 @@ impl <'a> Shader<'_> {
             .count()
     }
 
+    fn specialization(
+        module: &rspirv::dr::Module
+    ) -> usize {
+        module.annotations.iter()
+            .flat_map(|f| f.operands.clone())
+            .filter(|op| op.eq(&rspirv::dr::Operand::Decoration(rspirv::spirv::Decoration::SpecId)))
+            .count()
+    }
+
     fn descriptor_set_layout_bindings(
         binding_count: usize
     ) -> Vec<vk::DescriptorSetLayoutBinding> {
@@ -408,6 +442,7 @@ impl <'a> Shader<'_> {
         device: &'a ash::Device,
         bindings: &[vk::DescriptorSetLayoutBinding],
         binary: &[u32],
+        spec: vk::SpecializationInfoBuilder,
     ) -> Result<Shader<'a>, Box<dyn Error>> {
         let set_layouts = unsafe { device.create_descriptor_set_layout(
             &vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings),
@@ -420,23 +455,22 @@ impl <'a> Shader<'_> {
         )? };
 
         let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(binary), None)? };
-        let stage = vk::PipelineShaderStageCreateInfo {
-            p_name: SHADER_ENTRYPOINT,
-            module,
-            stage: vk::ShaderStageFlags::COMPUTE,
+        let stage = vk::PipelineShaderStageCreateInfo::builder()
             // According to https://raphlinus.github.io/gpu/2020/04/30/prefix-sum.html
             // "Another problem is querying the subgroup size from inside the kernel, which has a
             // surprising gotcha. Unless the VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT_EXT
             // flag is set at pipeline creation time, the gl_SubgroupSize variable is defined to have
             // the value from VkPhysicalDeviceSubgroupProperties, which in my experiment is always 32 on
             // Intel no matter the actual subgroup size. But setting that flag makes it give the value expected."
-            flags: vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT|vk::PipelineShaderStageCreateFlags::REQUIRE_FULL_SUBGROUPS_EXT,
-            ..Default::default()
-        };
+            .flags(vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT|vk::PipelineShaderStageCreateFlags::REQUIRE_FULL_SUBGROUPS_EXT)
+            .module(module)
+            .name(std::ffi::CStr::from_bytes_with_nul(b"main\0")?)
+            .specialization_info(&spec)
+            .stage(vk::ShaderStageFlags::COMPUTE);
 
         let pipeline = unsafe { device.create_compute_pipelines(
             vk::PipelineCache::null(),
-            &[vk::ComputePipelineCreateInfo::builder().stage(stage).layout(pipeline_layout).build()],
+            &[vk::ComputePipelineCreateInfo::builder().stage(stage.build()).layout(pipeline_layout).build()],
             None,
         ) }.map(|pipelines| pipelines[0]).map_err(|(_, err)| err)?;
 
