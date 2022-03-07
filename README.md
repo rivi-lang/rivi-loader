@@ -9,7 +9,7 @@
 rivi-loader = "0.1.4"
 ```
 
-rivi-loader is a Vulkan-based program loader for GPGPU applications. It builds on the Rust-based Vulkan wrapper [ash](https://github.com/MaikKlein/ash). The project is a part of research agenda of interoperable GPU computing, that is, an effort to evaluate how Vulkan could be utilized to replace GLSL and CUDA accelerated programs with Vulkan.
+rivi-loader is a Vulkan-based program loader for GPGPU applications. Roughly speaking, if you have input(s) and an output it will run a SPIR-V kernel on those values. This way, the long days of wondering how Vulkan works can be forgotten / skipped. That being said, the library does not help you in writing SPIR-V or any other shading language. It neither helps you in scheduling. What it does do is help you to setup the Vulkan instance, attach debug layers on it, query compute capable logical devices, expose fences and compute-capable queue families and queues, manage memory and command buffers, and deal with shader creation with specialization constant support. There is also a keen interest in making sure that the command buffers can be queued and polled in parallel on the CPU side.
 
 ## Example
 
@@ -32,34 +32,26 @@ fn main() {
 }
 ```
 
-The project aims to highlight performance optimizations available by using Vulkan with hand-written SPIR-V code. Various recent features of Vulkan, such as variable storage buffer pointers, dedicated memory allocations, subgroup operations, and asynchronous queue family usage are all relevant parts of the effort.
-
-Thanks to Vulkan, the example programs run on both discrete and integrated graphics cards and across various operating systems. Testing on discrete cards has primarily been done on Windows 10 and Linux (Arch and Ubuntu LTS using proprietary drivers) using AMD and Nvidia cards, with both AMD and Intel CPUs on computers with single and multiple GPUs. Integrated cards that have been tested include Apple M1, Raspberry Pi 4, and Nvidia Jetson TX2.
-
-The project is aimed as an example repository from which motivated people can use to start to tip their toes into GPGPU. In particular, the `examples/repl.rs` should be a good starting point to see what can be abstracted away. At the moment, programming your own application requires SPIR-V know-how, but one of the primary goals of the effort is eventually integrating a flavor of APL as the user-interfacing language (see: [haavisto2021vulkan](https://github.com/jhvst/haavisto2021vulkan) and [hal-03155647](https://hal.inria.fr/hal-03155647/)).
-
 ## Features
 
-- lifetime management for Vulkan resources
-- interoperable platform support across operating systems and graphics cards
-- multi-gpu support (mixing AMD and Nvidia on a single machine is OK)
+- lifetime management of Vulkan resources
+- multi-gpu support
+- allows scheduling on multiple queue families
+- allows scheduling on multiple queues of a single queue family
+- allows shader specialization constants to be set
+- supports per device querying of "advanced" compute capabilities, e.g., subgroup sizes
+- allows Rust generics to be used on input and output buffers
 
-## Current limitations (to be addressed)
+## Limitations (i.e., what this repository assumes)
 
-- output buffer dimensions have to be statically known and oftentimes hand-written, no type inference is given at the moment
-- memory limitations are not endorsed, which means **you may run out of memory and hang your computer**
-- this is only a loader program, it assumes you can write your own compute kernels
+- there should always exist an input vector and an output vector in your SPIR-V code
+- the length of the output vector has to be always statically known
 
 ## Installation
 
 1. Make sure Rust is installed, if not, consider [rustup](https://rustup.rs/)
 2. Make sure Vulkan is installed, if not, consider [LunarG](https://vulkan.lunarg.com/sdk/home) and the installation instructions found on [ash](https://github.com/MaikKlein/ash#example)
-3. Run an example. **Recommended**: simple vector addition `cargo run --release --example repl`. For random forest prediction (see: [haavisto2021vulkan](https://github.com/jhvst/haavisto2021vulkan)) run `cargo run --release --example rf` (**this may crash your computer**).
-
-### Example descriptions
-
-- `repl` a rough translation of WebGPU-based [laskin.live](https://github.com/periferia-labs/laskin.live) on Vulkan
-- `rf` a random forest prediction algorithm translated from scikit (proof-of-concept of variable pointers feature and performance comparison against Cython)
+3. Run an example, e.g. `cargo run --example reduce`.
 
 ## The library
 
