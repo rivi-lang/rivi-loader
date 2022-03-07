@@ -108,20 +108,11 @@ impl Vulkan {
         Ok(pdevices.into_iter()
             .filter(|pdevice| {
                 let (_, properties) = Self::device_name(instance, *pdevice);
-<<<<<<< HEAD
-                properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
-            })
-            .map(|pdevice| {
-
-                let (device_name, _) = Self::device_name(instance, pdevice);
-                println!("Found device: {}", device_name);
-=======
                 let sp = Self::subgroup_properties(instance, *pdevice);
                 properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
                 && sp.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
             })
             .map(|pdevice| {
->>>>>>> ramp
                 let device = Self::create_device(instance, pdevice)?;
                 let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
                 let fences = Self::create_fences(&device, queue_infos)?;
@@ -134,14 +125,6 @@ impl Vulkan {
                 })?;
                 let memory = unsafe { instance.get_physical_device_memory_properties(pdevice) };
 
-<<<<<<< HEAD
-                let sp = Self::subgroup_properties(instance, pdevice);
-                println!("Subgroup size of {} is: {:?}", device_name, sp.subgroup_size);
-                println!("Supported subgroup operations: {:?}", sp.supported_operations);
-                println!("Supported subgroup stages: {:?}", sp.supported_stages);
-
-=======
->>>>>>> ramp
                 Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
 
             })
@@ -224,11 +207,7 @@ impl Vulkan {
         ];
 
         if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-<<<<<<< HEAD
-            ext_names.push(EXT_PORTABILITY_SUBSET)
-=======
             ext_names.push(EXT_PORTABILITY_SUBSET);
->>>>>>> ramp
         }
 
         // See: https://github.com/MaikKlein/ash/issues/539
