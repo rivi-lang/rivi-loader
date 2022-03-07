@@ -14,8 +14,6 @@ const EXT_GET_MEMORY_REQUIREMENTS2: *const std::os::raw::c_char = concat!("VK_KH
 const EXT_DEDICATED_ALLOCATION: *const std::os::raw::c_char = concat!("VK_KHR_dedicated_allocation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 const EXT_PORTABILITY_SUBSET: *const std::os::raw::c_char = concat!("VK_KHR_portability_subset", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 
-const SHADER_ENTRYPOINT: *const std::os::raw::c_char = concat!("main", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
-
 pub fn new(
     debug: DebugOption
 ) -> Result<Vulkan, Box<dyn Error>> {
@@ -110,12 +108,11 @@ impl Vulkan {
         Ok(pdevices.into_iter()
             .filter(|pdevice| {
                 let (_, properties) = Self::device_name(instance, *pdevice);
+                let sp = Self::subgroup_properties(instance, *pdevice);
                 properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
+                && sp.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
             })
             .map(|pdevice| {
-
-                let (device_name, _) = Self::device_name(instance, pdevice);
-                println!("Found device: {}", device_name);
                 let device = Self::create_device(instance, pdevice)?;
                 let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
                 let fences = Self::create_fences(&device, queue_infos)?;
@@ -127,11 +124,6 @@ impl Vulkan {
                     buffer_device_address: false,
                 })?;
                 let memory = unsafe { instance.get_physical_device_memory_properties(pdevice) };
-
-                let sp = Self::subgroup_properties(instance, pdevice);
-                println!("Subgroup size of {} is: {:?}", device_name, sp.subgroup_size);
-                println!("Supported subgroup operations: {:?}", sp.supported_operations);
-                println!("Supported subgroup stages: {:?}", sp.supported_stages);
 
                 Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
 
@@ -215,7 +207,7 @@ impl Vulkan {
         ];
 
         if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-            ext_names.push(EXT_PORTABILITY_SUBSET)
+            ext_names.push(EXT_PORTABILITY_SUBSET);
         }
 
         // See: https://github.com/MaikKlein/ash/issues/539
@@ -239,15 +231,40 @@ impl Vulkan {
 
     pub fn load_shader<R: std::io::Read + std::io::Seek>(
         &self,
-        x: &mut R
+        x: &mut R,
+        specializations: Option<Vec<Vec<u8>>>,
     ) -> Result<Shader<'_>, Box<dyn Error>> {
         let binary = ash::util::read_spv(x)?;
         let bindings = Shader::module(&binary).map(|module| Shader::descriptor_set_layout_bindings(Shader::binding_count(&module)))?;
         match &self.compute {
             Some(c) => {
                 let shaders = c.iter()
-                    .map(|f| Shader::create(&f.device, &bindings, &binary))
-                    .collect::<Result<Vec<Shader>, Box<dyn Error>>>()?;
+                    .enumerate()
+                    .map(|(idx, f)| {
+                        match &specializations {
+                            Some(specs) => {
+                                let maps = (0..specs.len())
+                                    .into_iter()
+                                    .map(|id| {
+                                        vk::SpecializationMapEntry::builder()
+                                            .constant_id(id as u32)
+                                            .offset(0)
+                                            .size(1)
+                                            .build()
+                                    })
+                                    .collect::<Vec<_>>();
+                                let spec = vk::SpecializationInfo::builder()
+                                    .data(specs.get(idx).unwrap())
+                                    .map_entries(&maps);
+                                Shader::create(&f.device, &bindings, &binary, spec)
+                            },
+                            None => {
+                                let spec = vk::SpecializationInfo::builder();
+                                Shader::create(&f.device, &bindings, &binary, spec)
+                            },
+                        }
+                    })
+                    .collect::<Result<Vec<Shader<'_>>, Box<dyn Error>>>()?;
                 match shaders.into_iter().next() {
                     Some(s) => Ok(s),
                     None => Err("No compute capable devices".to_string().into()),
@@ -261,20 +278,11 @@ impl Vulkan {
         &self,
         input: &[Vec<Vec<T>>],
         output: &mut [T],
-        shader: &Shader,
+        shader: &Shader<'_>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match &self.compute {
             Some(c) => c.first().unwrap().execute(input, output, shader),
             None => Err("No compute capable devices".to_string().into()),
-        }
-    }
-
-    pub fn device_count(
-        &self
-    ) -> usize {
-        match &self.compute {
-            Some(c) => c.len(),
-            None => 0,
         }
     }
 
@@ -285,6 +293,54 @@ impl Vulkan {
             Some(c) => c.iter().map(|d| d.fences.len()).sum::<usize>(),
             None => 0,
         }
+    }
+}
+
+impl fmt::Display for Vulkan {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "cpu_logical_cores: {}", std::thread::available_parallelism().unwrap().get());
+        let pdevices = unsafe { self.instance.enumerate_physical_devices().unwrap() };
+        writeln!(f, "f32_size: {}", std::mem::size_of::<f32>());
+        writeln!(f, "gpu_device_count: {}", pdevices.len());
+        pdevices.into_iter()
+            .filter(|pdevice| {
+                let (_, properties) = Self::device_name(&self.instance, *pdevice);
+                let sp = Self::subgroup_properties(&self.instance, *pdevice);
+                properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
+                && sp.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
+            })
+            .for_each(|pdevice| {
+
+                let (device_name, properties) = Self::device_name(&self.instance, pdevice);
+                writeln!(f, "name: {}", device_name);
+                writeln!(f, "type: {:?}", properties.device_type);
+
+                let queue_infos = unsafe { Self::queue_infos(&self.instance, pdevice) };
+                writeln!(f, "queue_size: {:?}", queue_infos.len());
+                let queue_str = queue_infos.iter()
+                    .map(|f| {
+                        format!("{} {}", f.0, f.1.len())
+                    })
+                    .collect::<Vec<String>>();
+                writeln!(f, "queues: {:?}", queue_str);
+                let memory = unsafe { self.instance.get_physical_device_memory_properties(pdevice) };
+
+                let sp = Self::subgroup_properties(&self.instance, pdevice);
+                writeln!(f, "subgroup_size: {:?}", sp.subgroup_size);
+                writeln!(f, "subgroup_operations: {:?}", sp.supported_operations);
+
+                writeln!(f, "memory_heap_count: {}", memory.memory_heap_count);
+                let mem_str = memory.memory_heaps.iter()
+                    .filter(|mh| mh.size.ne(&0))
+                    .enumerate()
+                    .map(|(idx, mh)| {
+                        format!("{} {}", idx, mh.size / 1_073_741_824)
+                    })
+                    .collect::<Vec<String>>();
+                writeln!(f, "memory_heaps: {:?}", mem_str);
+
+            });
+        write!(f, "")
     }
 }
 
@@ -357,6 +413,15 @@ impl <'a> Shader<'_> {
             .count()
     }
 
+    fn specialization(
+        module: &rspirv::dr::Module
+    ) -> usize {
+        module.annotations.iter()
+            .flat_map(|f| f.operands.clone())
+            .filter(|op| op.eq(&rspirv::dr::Operand::Decoration(rspirv::spirv::Decoration::SpecId)))
+            .count()
+    }
+
     fn descriptor_set_layout_bindings(
         binding_count: usize
     ) -> Vec<vk::DescriptorSetLayoutBinding> {
@@ -375,6 +440,7 @@ impl <'a> Shader<'_> {
         device: &'a ash::Device,
         bindings: &[vk::DescriptorSetLayoutBinding],
         binary: &[u32],
+        spec: vk::SpecializationInfoBuilder,
     ) -> Result<Shader<'a>, Box<dyn Error>> {
         let set_layouts = unsafe { device.create_descriptor_set_layout(
             &vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings),
@@ -387,23 +453,22 @@ impl <'a> Shader<'_> {
         )? };
 
         let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(binary), None)? };
-        let stage = vk::PipelineShaderStageCreateInfo {
-            p_name: SHADER_ENTRYPOINT,
-            module,
-            stage: vk::ShaderStageFlags::COMPUTE,
+        let stage = vk::PipelineShaderStageCreateInfo::builder()
             // According to https://raphlinus.github.io/gpu/2020/04/30/prefix-sum.html
             // "Another problem is querying the subgroup size from inside the kernel, which has a
             // surprising gotcha. Unless the VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT_EXT
             // flag is set at pipeline creation time, the gl_SubgroupSize variable is defined to have
             // the value from VkPhysicalDeviceSubgroupProperties, which in my experiment is always 32 on
             // Intel no matter the actual subgroup size. But setting that flag makes it give the value expected."
-            flags: vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT|vk::PipelineShaderStageCreateFlags::REQUIRE_FULL_SUBGROUPS_EXT,
-            ..Default::default()
-        };
+            .flags(vk::PipelineShaderStageCreateFlags::ALLOW_VARYING_SUBGROUP_SIZE_EXT|vk::PipelineShaderStageCreateFlags::REQUIRE_FULL_SUBGROUPS_EXT)
+            .module(module)
+            .name(std::ffi::CStr::from_bytes_with_nul(b"main\0")?)
+            .specialization_info(&spec)
+            .stage(vk::ShaderStageFlags::COMPUTE);
 
         let pipeline = unsafe { device.create_compute_pipelines(
             vk::PipelineCache::null(),
-            &[vk::ComputePipelineCreateInfo::builder().stage(stage).layout(pipeline_layout).build()],
+            &[vk::ComputePipelineCreateInfo::builder().stage(stage.build()).layout(pipeline_layout).build()],
             None,
         ) }.map(|pipelines| pipelines[0]).map_err(|(_, err)| err)?;
 
@@ -482,7 +547,7 @@ impl Compute {
         output: vk::Buffer,
         input: &[Vec<T>],
         memory_mapping: (vk::DeviceSize, vk::DeviceSize),
-    ) -> Result<Vec<Buffer>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>> {
 
         let input_buffers = input.iter().map(|data| {
             let buffer = Buffer::new(
@@ -496,7 +561,7 @@ impl Compute {
             )?.fill(data)?;
             Ok(buffer)
         })
-        .collect::<Result<Vec<Buffer>, Box<dyn Error + Send + Sync>>>()?;
+        .collect::<Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>>>()?;
 
         let buffer_infos = (0..=input_buffers.len()).into_iter()
             .map(|f| match f {
@@ -540,7 +605,7 @@ impl Compute {
         &self,
         input: &[Vec<Vec<T>>],
         output: &mut [T],
-        shader: &Shader,
+        shader: &Shader<'_>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
         let output_buffer = Buffer::new(
@@ -584,10 +649,7 @@ impl Compute {
             Ok(())
         })?;
 
-        let data_ptr = match output_buffer.allocation.mapped_ptr() {
-            Some(c_ptr) => c_ptr.as_ptr().cast::<T>(),
-            None => return Err("could not map output buffer".to_string().into()),
-        };
+        let data_ptr = output_buffer.c_ptr.as_ptr().cast::<T>();
         unsafe { data_ptr.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
 
         Ok(())
@@ -685,8 +747,9 @@ impl <'a> Drop for Command<'a> {
 
 struct Buffer<'a, 'b>  {
     buffer: vk::Buffer,
-    allocation: Allocation,
+    allocation: Option<Allocation>,
     device_size: vk::DeviceSize,
+    c_ptr: std::ptr::NonNull<std::ffi::c_void>,
 
     device: &'a ash::Device,
     allocator: &'b Option<RwLock<Allocator>>,
@@ -720,18 +783,16 @@ impl <'a, 'b> Buffer<'_, '_> {
             location,
             linear: true,
         })?;
+        let c_ptr = allocation.mapped_ptr().unwrap();
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
-        Ok(Buffer { buffer, allocation, device_size, device, allocator })
+        Ok(Buffer { buffer, allocation: Some(allocation), c_ptr, device_size, device, allocator })
     }
 
     fn fill<T: Sized>(
         self,
         data: &[T],
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let data_ptr = match self.allocation.mapped_ptr() {
-            Some(c_ptr) => c_ptr.as_ptr().cast::<T>(),
-            None => return Err("could not fill buffer".to_string().into()),
-        };
+        let data_ptr = self.c_ptr.as_ptr().cast::<T>();
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
         Ok(self)
     }
@@ -741,7 +802,7 @@ impl <'a, 'b> Drop for Buffer<'a, 'b> {
     fn drop(&mut self) {
         let lock = self.allocator.as_ref().unwrap();
         let mut malloc = lock.write().unwrap();
-        malloc.free(self.allocation.to_owned()).unwrap();
+        malloc.free(self.allocation.take().unwrap()).unwrap();
         unsafe { self.device.destroy_buffer(self.buffer, None) };
     }
 }
