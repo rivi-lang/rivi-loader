@@ -14,8 +14,6 @@ const EXT_GET_MEMORY_REQUIREMENTS2: *const std::os::raw::c_char = concat!("VK_KH
 const EXT_DEDICATED_ALLOCATION: *const std::os::raw::c_char = concat!("VK_KHR_dedicated_allocation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 const EXT_PORTABILITY_SUBSET: *const std::os::raw::c_char = concat!("VK_KHR_portability_subset", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 
-const SHADER_ENTRYPOINT: *const std::os::raw::c_char = concat!("main", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
-
 pub fn new(
     debug: DebugOption
 ) -> Result<Vulkan, Box<dyn Error>> {
