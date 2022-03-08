@@ -298,7 +298,7 @@ impl Vulkan {
 
 impl fmt::Display for Vulkan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "cpu_logical_cores: {}", std::thread::available_parallelism().unwrap().get());
+        writeln!(f, "cpu_logical_cores: {}", "?");
         let pdevices = unsafe { self.instance.enumerate_physical_devices().unwrap() };
         writeln!(f, "f32_size: {}", std::mem::size_of::<f32>());
         writeln!(f, "gpu_device_count: {}", pdevices.len());
