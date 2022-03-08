@@ -59,7 +59,7 @@ impl Vulkan {
             }
         };
 
-        let entry = unsafe { ash::Entry::load()? };
+        let entry = ash::Entry::linked();
 
         let instance = unsafe {
             entry.create_instance(&vk::InstanceCreateInfo::builder()
