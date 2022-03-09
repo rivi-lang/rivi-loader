@@ -5,6 +5,7 @@ use std::{error::Error, fmt, sync::RwLock};
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
 use rayon::prelude::*;
+use rspirv::binary::Assemble;
 
 const LAYER_VALIDATION: *const std::os::raw::c_char = concat!("VK_LAYER_KHRONOS_validation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 const LAYER_DEBUG: *const std::os::raw::c_char = concat!("VK_LAYER_LUNARG_api_dump", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
@@ -231,11 +232,10 @@ impl Vulkan {
 
     pub fn load_shader<R: std::io::Read + std::io::Seek>(
         &self,
-        x: &mut R,
+        module: rspirv::dr::Module,
         specializations: Option<Vec<Vec<u8>>>,
     ) -> Result<Shader<'_>, Box<dyn Error>> {
-        let binary = ash::util::read_spv(x)?;
-        let bindings = Shader::module(&binary).map(|module| Shader::descriptor_set_layout_bindings(Shader::binding_count(&module)))?;
+        let bindings = Shader::descriptor_set_layout_bindings(Shader::binding_count(&module));
         match &self.compute {
             Some(c) => {
                 let shaders = c.iter()
@@ -256,11 +256,11 @@ impl Vulkan {
                                 let spec = vk::SpecializationInfo::builder()
                                     .data(specs.get(idx).unwrap())
                                     .map_entries(&maps);
-                                Shader::create(&f.device, &bindings, &binary, spec)
+                                Shader::create(&f.device, &bindings, &module, spec)
                             },
                             None => {
                                 let spec = vk::SpecializationInfo::builder();
-                                Shader::create(&f.device, &bindings, &binary, spec)
+                                Shader::create(&f.device, &bindings, &module, spec)
                             },
                         }
                     })
@@ -439,7 +439,7 @@ impl <'a> Shader<'_> {
     fn create(
         device: &'a ash::Device,
         bindings: &[vk::DescriptorSetLayoutBinding],
-        binary: &[u32],
+        module: &rspirv::dr::Module,
         spec: vk::SpecializationInfoBuilder,
     ) -> Result<Shader<'a>, Box<dyn Error>> {
         let set_layouts = unsafe { device.create_descriptor_set_layout(
@@ -452,7 +452,8 @@ impl <'a> Shader<'_> {
             None,
         )? };
 
-        let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(binary), None)? };
+        let binary = module.assemble();
+        let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&binary), None)? };
         let stage = vk::PipelineShaderStageCreateInfo::builder()
             // According to https://raphlinus.github.io/gpu/2020/04/30/prefix-sum.html
             // "Another problem is querying the subgroup size from inside the kernel, which has a
