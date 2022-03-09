@@ -230,7 +230,7 @@ impl Vulkan {
         unsafe { instance.create_device(pdevice, &device_info, None) }
     }
 
-    pub fn load_shader<R: std::io::Read + std::io::Seek>(
+    pub fn load_shader(
         &self,
         module: rspirv::dr::Module,
         specializations: Option<Vec<Vec<u8>>>,
