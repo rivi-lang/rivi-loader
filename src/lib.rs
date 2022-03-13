@@ -26,7 +26,7 @@ pub struct Vulkan {
     entry: ash::Entry, // Needs to outlive Instance and Devices.
     instance: ash::Instance, // Needs to outlive Devices.
     debug_layer: Option<DebugLayer>,
-    pub compute: Option<Vec<Compute>>,
+    compute: Option<Vec<Compute>>,
 }
 
 impl Vulkan {
@@ -230,37 +230,48 @@ impl Vulkan {
         unsafe { instance.create_device(pdevice, &device_info, None) }
     }
 
-    pub fn load_shader<'a>(
-        queue_families: &'a [Compute],
-        module: &rspirv::dr::Module,
+    pub fn load_shader(
+        &self,
+        module: rspirv::dr::Module,
         specializations: Option<Vec<Vec<u8>>>,
-    ) -> Result<Vec<Shader<'a>>, Box<dyn Error>> {
-        let bindings = Shader::descriptor_set_layout_bindings(Shader::binding_count(module));
-        queue_families.iter()
-            .enumerate()
-            .map(|(idx, f)| match &specializations {
-                Some(specs) => {
-                    let maps = (0..specs.len())
-                        .into_iter()
-                        .map(|id| {
-                            vk::SpecializationMapEntry::builder()
-                                .constant_id(id as u32)
-                                .offset(0)
-                                .size(1)
-                                .build()
-                        })
-                        .collect::<Vec<_>>();
-                    let spec = vk::SpecializationInfo::builder()
-                        .data(specs.get(idx).unwrap())
-                        .map_entries(&maps);
-                    Shader::create(&f.device, &bindings, module, spec)
-                },
-                None => {
-                    let spec = vk::SpecializationInfo::builder();
-                    Shader::create(&f.device, &bindings, module, spec)
-                },
-            })
-            .collect::<Result<Vec<Shader<'a>>, Box<dyn Error>>>()
+    ) -> Result<Shader<'_>, Box<dyn Error>> {
+        let bindings = Shader::descriptor_set_layout_bindings(Shader::binding_count(&module));
+        match &self.compute {
+            Some(c) => {
+                let shaders = c.iter()
+                    .enumerate()
+                    .map(|(idx, f)| {
+                        match &specializations {
+                            Some(specs) => {
+                                let maps = (0..specs.len())
+                                    .into_iter()
+                                    .map(|id| {
+                                        vk::SpecializationMapEntry::builder()
+                                            .constant_id(id as u32)
+                                            .offset(0)
+                                            .size(1)
+                                            .build()
+                                    })
+                                    .collect::<Vec<_>>();
+                                let spec = vk::SpecializationInfo::builder()
+                                    .data(specs.get(idx).unwrap())
+                                    .map_entries(&maps);
+                                Shader::create(&f.device, &bindings, &module, spec)
+                            },
+                            None => {
+                                let spec = vk::SpecializationInfo::builder();
+                                Shader::create(&f.device, &bindings, &module, spec)
+                            },
+                        }
+                    })
+                    .collect::<Result<Vec<Shader<'_>>, Box<dyn Error>>>()?;
+                match shaders.into_iter().next() {
+                    Some(s) => Ok(s),
+                    None => Err("No compute capable devices".to_string().into()),
+                }
+            }
+            None => Err("No compute capable devices".to_string().into()),
+        }
     }
 
     pub fn compute<T: std::marker::Sync>(
@@ -483,7 +494,7 @@ struct Fence {
     phy_index: u32,
 }
 
-pub struct Compute {
+struct Compute {
     device: ash::Device,
     allocator: Option<RwLock<Allocator>>,
     fences: Vec<Fence>,
