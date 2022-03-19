@@ -4,7 +4,6 @@ use std::{error::Error, fmt, sync::RwLock};
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
-use rayon::prelude::*;
 use rspirv::binary::Assemble;
 
 const LAYER_VALIDATION: *const std::os::raw::c_char = concat!("VK_LAYER_KHRONOS_validation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
@@ -20,6 +19,38 @@ pub fn new(
 ) -> Result<Vulkan, Box<dyn Error>> {
     let vk = Vulkan::new(debug)?;
     Ok(vk)
+}
+
+pub struct Specialization {
+    constant_id: u32,
+    offset: u32,
+    size: usize,
+    data: u8,
+}
+
+// TODO: pass validation layers
+pub fn load_shader(
+    gpu: &Compute,
+    module: rspirv::dr::Module,
+    specializations: Vec<Specialization>,
+) -> Result<Shader<'_>, Box<dyn Error>> {
+    let bindings = Shader::descriptor_set_layout_bindings(Shader::binding_count(&module));
+    let specialization_infos = specializations.iter().map(|specialization| {
+        (specialization.data, vk::SpecializationMapEntry::builder()
+            .constant_id(specialization.constant_id)
+            .offset(specialization.offset)
+            .size(specialization.size))
+        })
+        .collect::<Vec<_>>();
+    let mut data = Vec::new();
+    let mut map_entries = Vec::new();
+    for specialization_info in specialization_infos {
+        data.push(specialization_info.0);
+        map_entries.push(specialization_info.1.build());
+    }
+    Shader::create(&gpu.device, &bindings, &module, vk::SpecializationInfo::builder()
+        .data(&data)
+        .map_entries(&map_entries))
 }
 
 pub struct Vulkan {
@@ -85,9 +116,9 @@ impl Vulkan {
         };
 
         let computes = Self::logical_devices(&instance)?;
-        let compute = match computes.len() {
-            0 => None,
-            _ => Some(computes),
+        let compute = match computes.is_empty() {
+            true => None,
+            false => Some(computes),
         };
 
         Ok(Self{entry, instance, debug_layer, compute})
@@ -116,21 +147,17 @@ impl Vulkan {
             .map(|pdevice| {
                 let device = Self::create_device(instance, pdevice)?;
                 let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
-                let fences = Self::create_fences(&device, queue_infos)?;
-                let allocator = Allocator::new(&AllocatorCreateDesc {
-                    physical_device: pdevice,
-                    device: device.clone(),
-                    instance: instance.clone(),
-                    debug_settings: Default::default(),
-                    buffer_device_address: false,
-                })?;
+                let fences = Some(Self::create_fences(instance, pdevice, &device, queue_infos)?);
                 let memory = unsafe { instance.get_physical_device_memory_properties(pdevice) };
+                let (name, properties) = Self::device_name(instance, pdevice);
+                let subgroup_properties = Self::subgroup_properties(instance, pdevice);
+                let subgroup_size = subgroup_properties.subgroup_size as usize;
 
-                Ok(Compute { device, allocator: Some(RwLock::new(allocator)), fences, memory})
+                Ok(Compute { device, fences, memory, name, subgroup_size, supported_operations: subgroup_properties.supported_operations, properties})
 
             })
             .collect::<Result<Vec<Compute>, Box<dyn Error>>>()?.into_iter()
-            .filter(|c| !c.fences.is_empty())
+            .filter(|c| !c.fences.is_none())
             .collect::<Vec<Compute>>())
     }
 
@@ -172,19 +199,27 @@ impl Vulkan {
     }
 
     fn create_fences(
+        instance: &ash::Instance,
+        pdevice: vk::PhysicalDevice,
         device: &ash::Device,
         queue_infos: Vec<(usize, Vec<f32>)>,
     ) -> Result<Vec<Fence>, Box<dyn Error>> {
-        Ok(queue_infos.into_iter().flat_map(|(phy_index, queue_priorities)| {
-            (0..queue_priorities.len()).into_iter().map(|queue_index| {
-                let vk_fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
-                let present_queue = unsafe { device.get_device_queue(phy_index as u32, queue_index as u32) };
-                Ok(Fence{ fence: vk_fence, present_queue, phy_index: phy_index as u32 })
+        queue_infos.into_iter().map(|(phy_index, queue_priorities)| {
+            let vk_fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
+            let queues = (0..queue_priorities.len()).into_iter().map(|queue_index| {
+                unsafe { device.get_device_queue(phy_index as u32, queue_index as u32) }
             })
-            .collect::<Result<Vec<Fence>, Box<dyn Error>>>().into_iter()
-            .flatten()
+            .collect::<Vec<vk::Queue>>();
+            let allocator = Some(RwLock::new(Allocator::new(&AllocatorCreateDesc {
+                physical_device: pdevice,
+                device: device.clone(),
+                instance: instance.clone(),
+                debug_settings: Default::default(),
+                buffer_device_address: false,
+            })?));
+            Ok(Fence{ vk_fence, queues, phy_index, allocator})
         })
-        .collect())
+        .collect::<Result<Vec<Fence>, Box<dyn Error>>>()
     }
 
     fn create_device(
@@ -230,58 +265,11 @@ impl Vulkan {
         unsafe { instance.create_device(pdevice, &device_info, None) }
     }
 
-    pub fn load_shader(
-        &self,
-        module: rspirv::dr::Module,
-        specializations: Option<Vec<Vec<u8>>>,
-    ) -> Result<Shader<'_>, Box<dyn Error>> {
-        let bindings = Shader::descriptor_set_layout_bindings(Shader::binding_count(&module));
+    pub fn local_gpus(
+        &self
+    ) -> Result<&[Compute], Box<dyn Error>> {
         match &self.compute {
-            Some(c) => {
-                let shaders = c.iter()
-                    .enumerate()
-                    .map(|(idx, f)| {
-                        match &specializations {
-                            Some(specs) => {
-                                let maps = (0..specs.len())
-                                    .into_iter()
-                                    .map(|id| {
-                                        vk::SpecializationMapEntry::builder()
-                                            .constant_id(id as u32)
-                                            .offset(0)
-                                            .size(1)
-                                            .build()
-                                    })
-                                    .collect::<Vec<_>>();
-                                let spec = vk::SpecializationInfo::builder()
-                                    .data(specs.get(idx).unwrap())
-                                    .map_entries(&maps);
-                                Shader::create(&f.device, &bindings, &module, spec)
-                            },
-                            None => {
-                                let spec = vk::SpecializationInfo::builder();
-                                Shader::create(&f.device, &bindings, &module, spec)
-                            },
-                        }
-                    })
-                    .collect::<Result<Vec<Shader<'_>>, Box<dyn Error>>>()?;
-                match shaders.into_iter().next() {
-                    Some(s) => Ok(s),
-                    None => Err("No compute capable devices".to_string().into()),
-                }
-            }
-            None => Err("No compute capable devices".to_string().into()),
-        }
-    }
-
-    pub fn compute<T: std::marker::Sync>(
-        &self,
-        input: &[Vec<Vec<T>>],
-        output: &mut [T],
-        shader: &Shader<'_>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        match &self.compute {
-            Some(c) => c.first().unwrap().execute(input, output, shader),
+            Some(gpus) => Ok(gpus),
             None => Err("No compute capable devices".to_string().into()),
         }
     }
@@ -290,7 +278,7 @@ impl Vulkan {
         &self
     ) -> usize {
         match &self.compute {
-            Some(c) => c.iter().map(|d| d.fences.len()).sum::<usize>(),
+            Some(c) => c.iter().map(|d| d.fences.as_ref().unwrap().len()).sum::<usize>(),
             None => 0,
         }
     }
@@ -298,49 +286,38 @@ impl Vulkan {
 
 impl fmt::Display for Vulkan {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "cpu_logical_cores: {}", "?");
-        let pdevices = unsafe { self.instance.enumerate_physical_devices().unwrap() };
-        writeln!(f, "f32_size: {}", std::mem::size_of::<f32>());
-        writeln!(f, "gpu_device_count: {}", pdevices.len());
-        pdevices.into_iter()
-            .filter(|pdevice| {
-                let (_, properties) = Self::device_name(&self.instance, *pdevice);
-                let sp = Self::subgroup_properties(&self.instance, *pdevice);
-                properties.device_type.ne(&vk::PhysicalDeviceType::CPU)
-                && sp.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
-            })
-            .for_each(|pdevice| {
+        let cpus = format!("cpu_logical_cores: {}", "?");
+        let f32_size = format!("f32_size: {}", std::mem::size_of::<f32>());
+        let gpu_device_count = format!("gpu_device_count: {}", self.compute.as_ref().unwrap().len());
+        let gpus = self.compute.as_ref().unwrap().iter().map(|gpu| {
 
-                let (device_name, properties) = Self::device_name(&self.instance, pdevice);
-                writeln!(f, "name: {}", device_name);
-                writeln!(f, "type: {:?}", properties.device_type);
+            let name = format!("name: {}", gpu.name);
+            let device_type = format!("device_type: {:?}", gpu.properties.device_type);
 
-                let queue_infos = unsafe { Self::queue_infos(&self.instance, pdevice) };
-                writeln!(f, "queue_size: {:?}", queue_infos.len());
-                let queue_str = queue_infos.iter()
-                    .map(|f| {
-                        format!("{} {}", f.0, f.1.len())
-                    })
-                    .collect::<Vec<String>>();
-                writeln!(f, "queues: {:?}", queue_str);
-                let memory = unsafe { self.instance.get_physical_device_memory_properties(pdevice) };
+            let queue_size = format!("queue_size: {:?}", gpu.fences.as_ref().unwrap().len());
+            let queue_str = gpu.fences.as_ref().unwrap().iter()
+                .map(|f| format!("{} {}", f.phy_index, f.queues.len()))
+                .collect::<Vec<String>>();
+            let queues = format!("queues: {:?}", queue_str);
 
-                let sp = Self::subgroup_properties(&self.instance, pdevice);
-                writeln!(f, "subgroup_size: {:?}", sp.subgroup_size);
-                writeln!(f, "subgroup_operations: {:?}", sp.supported_operations);
+            let subgroup_size = format!("subgroup_size: {:?}", gpu.subgroup_size);
+            let subgroup_operations = format!("subgroup_operations: {:?}", gpu.supported_operations);
 
-                writeln!(f, "memory_heap_count: {}", memory.memory_heap_count);
-                let mem_str = memory.memory_heaps.iter()
-                    .filter(|mh| mh.size.ne(&0))
-                    .enumerate()
-                    .map(|(idx, mh)| {
-                        format!("{} {}", idx, mh.size / 1_073_741_824)
-                    })
-                    .collect::<Vec<String>>();
-                writeln!(f, "memory_heaps: {:?}", mem_str);
+            let memory_heap_count = format!("memory_heap_count: {}", gpu.memory.memory_heap_count);
+            let mem_str = gpu.memory.memory_heaps.iter()
+                .filter(|mh| mh.size.ne(&0))
+                .enumerate()
+                .map(|(idx, mh)| {
+                    format!("{} {}", idx, mh.size / 1_073_741_824)
+                })
+                .collect::<Vec<String>>();
+            let memory_heaps = format!("memory_heaps: {:?}", mem_str);
 
-            });
-        write!(f, "")
+            format!("{name}\n{device_type}\n{queue_size}\n{queues}\n{subgroup_size}\n{subgroup_operations}\n{memory_heap_count}\n{memory_heaps}")
+
+        })
+        .collect::<String>();
+        write!(f, "{cpus}\n{f32_size}\n{gpu_device_count}\n{gpus}")
     }
 }
 
@@ -396,14 +373,6 @@ pub struct Shader<'a> {
 
 impl <'a> Shader<'_> {
 
-    fn module(
-        binary: &[u32]
-    ) -> Result<rspirv::dr::Module, Box<dyn Error>> {
-        let mut loader = rspirv::dr::Loader::new();
-        rspirv::binary::parse_words(binary, &mut loader)?;
-        Ok(loader.module())
-    }
-
     fn binding_count(
         module: &rspirv::dr::Module
     ) -> usize {
@@ -413,26 +382,17 @@ impl <'a> Shader<'_> {
             .count()
     }
 
-    fn specialization(
-        module: &rspirv::dr::Module
-    ) -> usize {
-        module.annotations.iter()
-            .flat_map(|f| f.operands.clone())
-            .filter(|op| op.eq(&rspirv::dr::Operand::Decoration(rspirv::spirv::Decoration::SpecId)))
-            .count()
-    }
-
     fn descriptor_set_layout_bindings(
         binding_count: usize
     ) -> Vec<vk::DescriptorSetLayoutBinding> {
-        (0..binding_count).into_iter().map(|i|
+        (0..binding_count).into_iter().map(|i| {
             vk::DescriptorSetLayoutBinding::builder()
                 .binding(i as u32)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE)
                 .build()
-        )
+        })
         .collect()
     }
 
@@ -447,10 +407,18 @@ impl <'a> Shader<'_> {
             None,
         ) }.map(|set_layout| vec![set_layout])?;
 
+        // TODO: make dynamic with spir-v reflection
+        let push_constant_ranges = vk::PushConstantRange::builder()
+            .offset(0)
+            .size(4)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .build();
         let pipeline_layout = unsafe { device.create_pipeline_layout(
-            &vk::PipelineLayoutCreateInfo::builder().set_layouts(&set_layouts),
-            None,
-        )? };
+            &vk::PipelineLayoutCreateInfo::builder()
+                .set_layouts(&set_layouts)
+                .push_constant_ranges(&[push_constant_ranges]),
+            None)?
+        };
 
         let binary = module.assemble();
         let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&binary), None)? };
@@ -488,94 +456,54 @@ impl <'a> Drop for Shader<'a> {
     }
 }
 
-struct Fence {
-    fence: vk::Fence,
-    present_queue: vk::Queue,
-    phy_index: u32,
-}
+pub struct Fence {
+    pub queues: Vec<vk::Queue>,
+    pub phy_index: usize,
 
-struct Compute {
-    device: ash::Device,
+    vk_fence: vk::Fence,
     allocator: Option<RwLock<Allocator>>,
-    fences: Vec<Fence>,
-    memory: vk::PhysicalDeviceMemoryProperties,
 }
 
-impl fmt::Debug for Compute {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+pub struct Compute {
+    pub memory: vk::PhysicalDeviceMemoryProperties,
+    pub name: String,
+    pub subgroup_size: usize,
+    pub properties: vk::PhysicalDeviceProperties,
+    pub supported_operations: vk::SubgroupFeatureFlags,
+    pub fences: Option<Vec<Fence>>,
 
-        println!("Memory types: {}", self.memory.memory_type_count);
-        self.memory.memory_types.iter()
-            .filter(|mt| !mt.property_flags.is_empty())
-            .enumerate()
-            .for_each(|(idx, mt)| {
-                println!("Index {} {:?} (heap {})", idx, mt.property_flags, mt.heap_index);
-            });
+    device: ash::Device,
+}
 
-        println!("Memory heaps: {}", self.memory.memory_heap_count);
-        self.memory.memory_heaps.iter()
-            .filter(|mh| mh.size.ne(&0))
-            .enumerate()
-            .for_each(|(idx, mh)| {
-                println!("{:?} GiB {:?} (heap {})", mh.size / 1_073_741_824, mh.flags, idx);
-            });
+pub struct Schedule<'a, T> {
+    pub output: &'a mut [T],
+    pub input: &'a [Vec<T>],
+    pub shader: &'a Shader<'a>,
+    pub push_constants: Vec<PushConstant>,
+    pub fence: &'a Fence,
+}
 
-        f.write_fmt(format_args!("  Found {} compute core(s) with {} total of thread(s)", self.cores().len(), self.fences.len()))
-    }
+pub struct PushConstant {
+    pub offset: u32,
+    pub constants: Vec<u8>,
 }
 
 impl Compute {
 
-    fn cores(
-        &self
-    ) -> Vec<u32> {
-        self.fences.iter().fold(vec![], |mut acc, f| {
-            if !acc.contains(&f.phy_index) {
-                acc.push(f.phy_index);
-            }
-            acc
-        })
-    }
-
-    // task must return a result vector to avoid
-    // rust ownership system to delete it before
-    // it is used by vulkan
-    fn task<T>(
+    fn task(
         &self,
         descriptor_set: vk::DescriptorSet,
         command_buffer: vk::CommandBuffer,
         shader: &Shader<'_>,
-        output: vk::Buffer,
-        input: &[Vec<T>],
-        memory_mapping: (vk::DeviceSize, vk::DeviceSize),
-    ) -> Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>> {
+        output: &Buffer,
+        input: &[Buffer],
+        push_constants: &[PushConstant],
+    ) -> Result<(), vk::Result> {
 
-        let input_buffers = input.iter().map(|data| {
-            let buffer = Buffer::new(
-                "cpu input",
-                &self.device,
-                &self.allocator,
-                (data.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
-                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-                gpu_allocator::MemoryLocation::CpuToGpu,
-                &self.cores(),
-            )?.fill(data)?;
-            Ok(buffer)
-        })
-        .collect::<Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>>>()?;
-
-        let buffer_infos = (0..=input_buffers.len()).into_iter()
+        let buffer_infos = (0..=input.len()).into_iter()
             .map(|f| match f {
-                0 => [vk::DescriptorBufferInfo::builder()
-                    .buffer(output)
-                    .offset(memory_mapping.0)
-                    .range(memory_mapping.1)
-                    .build()],
-                _ => [vk::DescriptorBufferInfo::builder()
-                    .buffer(input_buffers[f-1].buffer)
-                    .offset(0)
-                    .range(vk::WHOLE_SIZE)
-                    .build()],
+                0 => [output.buffer_info],
+                _ => [input[f-1].buffer_info],
             })
             .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
 
@@ -595,63 +523,89 @@ impl Compute {
             self.device.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
             self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
             self.device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[descriptor_set], &[]);
+            for push_constant in push_constants {
+                self.device.cmd_push_constants(command_buffer, shader.pipeline_layout, vk::ShaderStageFlags::COMPUTE, push_constant.offset, &push_constant.constants);
+            }
             self.device.cmd_dispatch(command_buffer, 1024, 1, 1);
-            self.device.end_command_buffer(command_buffer)?;
+            self.device.end_command_buffer(command_buffer)
         }
-
-        Ok(input_buffers)
     }
 
-    fn execute<T: std::marker::Sync>(
+    pub fn execute<T: std::marker::Sync>(
         &self,
-        input: &[Vec<Vec<T>>],
-        output: &mut [T],
-        shader: &Shader<'_>,
+        schedule: &mut Schedule<T>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
+        let allocator = schedule.fence.allocator.as_ref().unwrap();
+
         let output_buffer = Buffer::new(
-            "output buffer",
+            &format!("output {}", schedule.fence.phy_index),
             &self.device,
-            &self.allocator,
-            (output.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
+            &allocator,
+            Buffer::buffer_create_info(
+                (schedule.output.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
+                &[schedule.fence.phy_index as u32]
+            ),
             gpu_allocator::MemoryLocation::GpuToCpu,
-            &self.cores(),
+            0,
+            vk::WHOLE_SIZE,
         )?;
-        let output_chunk_size = output_buffer.device_size / input.len() as vk::DeviceSize;
+
+        let input_buffers = schedule.input
+            .iter()
+            .map(|data| {
+                let buffer = Buffer::new(
+                    &format!("input {}", schedule.fence.phy_index),
+                    &self.device,
+                    &allocator,
+                    Buffer::buffer_create_info(
+                        (data.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
+                        vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
+                        &[schedule.fence.phy_index as u32]
+                    ),
+                    gpu_allocator::MemoryLocation::CpuToGpu,
+                    0,
+                    vk::WHOLE_SIZE,
+                )?.fill(data)?;
+                Ok(buffer)
+            })
+            .collect::<Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>>>()?;
 
         let command = Command::new(
-            0,
-            shader.binding_count,
-            &shader.set_layouts,
-            input.len() as u32,
+            schedule.fence.phy_index as u32,
+            schedule.shader.binding_count,
+            &schedule.shader.set_layouts,
+            schedule.input.len() as u32,
             &self.device,
         )?;
 
         command.descriptor_sets.iter()
             .zip(command.command_buffers.iter())
-            .zip(input.iter())
-            .enumerate().map(|(idx, cmd)| {
+            .zip(schedule.fence.queues.iter())
+            .try_for_each(|((descriptor_set, command_buffer), _)| {
+                let queue = schedule.fence.queues.first().unwrap();
                 self.task(
-                    *cmd.0.0,
-                    *cmd.0.1,
-                    shader,
-                    output_buffer.buffer,
-                    cmd.1,
-                    (output_chunk_size * idx as vk::DeviceSize, output_chunk_size),
-                )
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .and_then(|_| unsafe {
-            let submits = [vk::SubmitInfo::builder().command_buffers(&command.command_buffers).build()];
-            self.device.queue_submit(self.fences[0].present_queue, &submits, self.fences[0].fence)?;
-            self.device.wait_for_fences(&[self.fences[0].fence], true, u64::MAX)?;
-            self.device.reset_fences(&[self.fences[0].fence])?;
-            Ok(())
-        })?;
+                    *descriptor_set,
+                    *command_buffer,
+                    schedule.shader,
+                    &output_buffer,
+                    &input_buffers,
+                    &schedule.push_constants,
+                )?;
+                // TODO: possible optimization here: group submits per queue -> map into intermediate result
+                // useful if multiple queues are used
+                let submits = [vk::SubmitInfo::builder().command_buffers(&[*command_buffer]).build()];
+                unsafe { self.device.queue_submit(*queue, &submits, schedule.fence.vk_fence) }
+            })
+            .and_then(|_| unsafe {
+                self.device.wait_for_fences(&[schedule.fence.vk_fence], true, u64::MAX)?;
+                self.device.reset_fences(&[schedule.fence.vk_fence])?;
+                Ok(())
+            })?;
 
         let data_ptr = output_buffer.c_ptr.as_ptr().cast::<T>();
-        unsafe { data_ptr.copy_to_nonoverlapping(output.as_mut_ptr(), output.len()) };
+        unsafe { data_ptr.copy_to_nonoverlapping(schedule.output.as_mut_ptr(), schedule.output.len()) };
 
         Ok(())
     }
@@ -660,10 +614,10 @@ impl Compute {
 impl Drop for Compute {
     fn drop(&mut self) {
         unsafe { self.device.device_wait_idle().unwrap() }
-        for fence in &self.fences {
-            unsafe { self.device.destroy_fence(fence.fence, None) }
+        for fence in self.fences.as_ref().unwrap() {
+            unsafe { self.device.destroy_fence(fence.vk_fence, None) }
         }
-        self.allocator = None;
+        self.fences = None;
         unsafe { self.device.destroy_device(None) }
     }
 }
@@ -749,11 +703,11 @@ impl <'a> Drop for Command<'a> {
 struct Buffer<'a, 'b>  {
     buffer: vk::Buffer,
     allocation: Option<Allocation>,
-    device_size: vk::DeviceSize,
     c_ptr: std::ptr::NonNull<std::ffi::c_void>,
+    buffer_info: vk::DescriptorBufferInfo,
 
     device: &'a ash::Device,
-    allocator: &'b Option<RwLock<Allocator>>,
+    allocator: &'b RwLock<Allocator>,
 }
 
 impl <'a, 'b> Buffer<'_, '_> {
@@ -761,23 +715,15 @@ impl <'a, 'b> Buffer<'_, '_> {
     fn new(
         name: &str,
         device: &'a ash::Device,
-        allocator: &'b Option<RwLock<Allocator>>,
-        device_size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
+        allocator: &'b &RwLock<Allocator>,
+        create_info: vk::BufferCreateInfoBuilder,
         location: gpu_allocator::MemoryLocation,
-        queue_family_indices: &[u32],
+        offset: vk::DeviceSize,
+        range: vk::DeviceSize,
     ) -> Result<Buffer<'a, 'b>, Box<dyn Error + Send + Sync>> {
-        let create_info = vk::BufferCreateInfo::builder()
-            .size(device_size)
-            .usage(usage)
-            .sharing_mode(match queue_family_indices.len() {
-                1 => vk::SharingMode::EXCLUSIVE,
-                _ => vk::SharingMode::CONCURRENT,
-            })
-            .queue_family_indices(queue_family_indices);
         let buffer = unsafe { device.create_buffer(&create_info, None)? };
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-        let mut malloc = allocator.as_ref().unwrap().write().unwrap();
+        let mut malloc = allocator.write().unwrap();
         let allocation = malloc.allocate(&AllocationCreateDesc {
             name,
             requirements,
@@ -786,7 +732,8 @@ impl <'a, 'b> Buffer<'_, '_> {
         })?;
         let c_ptr = allocation.mapped_ptr().unwrap();
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
-        Ok(Buffer { buffer, allocation: Some(allocation), c_ptr, device_size, device, allocator })
+        let buffer_info = Self::buffer_info(buffer, offset, range);
+        Ok(Buffer { buffer, allocation: Some(allocation), c_ptr, device, buffer_info, allocator })
     }
 
     fn fill<T: Sized>(
@@ -797,12 +744,38 @@ impl <'a, 'b> Buffer<'_, '_> {
         unsafe { data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
         Ok(self)
     }
+
+    fn buffer_create_info(
+        device_size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        queue_family_indices: &[u32],
+    ) -> vk::BufferCreateInfoBuilder {
+        vk::BufferCreateInfo::builder()
+            .size(device_size)
+            .usage(usage)
+            .sharing_mode(match queue_family_indices.len() {
+                1 => vk::SharingMode::EXCLUSIVE,
+                _ => vk::SharingMode::CONCURRENT,
+            })
+            .queue_family_indices(queue_family_indices)
+    }
+
+    fn buffer_info(
+        buffer: vk::Buffer,
+        offset: vk::DeviceSize,
+        range: vk::DeviceSize
+    ) -> vk::DescriptorBufferInfo {
+        vk::DescriptorBufferInfo::builder()
+            .buffer(buffer)
+            .offset(offset)
+            .range(range)
+            .build()
+    }
 }
 
 impl <'a, 'b> Drop for Buffer<'a, 'b> {
     fn drop(&mut self) {
-        let lock = self.allocator.as_ref().unwrap();
-        let mut malloc = lock.write().unwrap();
+        let mut malloc = self.allocator.write().unwrap();
         malloc.free(self.allocation.take().unwrap()).unwrap();
         unsafe { self.device.destroy_buffer(self.buffer, None) };
     }

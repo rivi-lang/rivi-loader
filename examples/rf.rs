@@ -1,6 +1,7 @@
 use std::{error::Error, time::Instant};
 
-use rivi_loader::DebugOption;
+use rivi_loader::{DebugOption, Schedule, PushConstant};
+use rayon::prelude::*;
 
 /// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
 /// The implementation of this algorithm was derived from Python/Cython to APL, and
@@ -14,18 +15,21 @@ fn main() {
     // initialize vulkan process
     let vk = rivi_loader::new(DebugOption::None).unwrap();
     // bind shader to a compute device
-    let mut cursor = std::io::Cursor::new(&include_bytes!("./rf/shader/apply.spv")[..]);
-    let shader = vk.load_shader(&mut cursor, None).unwrap();
+    let binary = &include_bytes!("./rf/shader/apply.spv")[..];
+    let shader = rspirv::dr::load_bytes(binary).unwrap();
 
     loop {
         let a = batched(&vk, &shader);
-        let b = at_once(&vk, &shader);
+        //let b = at_once(&vk, &shader);
         println!("Batched runtime: {}ms", a);
-        println!("At once runtime: {}ms", b);
+        //println!("At once runtime: {}ms", b);
     }
 }
 
-fn batched(vk: &rivi_loader::Vulkan, shader: &rivi_loader::Shader) -> u128 {
+fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
+
+    let gpus = vk.local_gpus().unwrap();
+    let gpu = gpus.first().unwrap();
 
     // replicate work among cores
     let input = load_input(vk.threads());
@@ -35,33 +39,29 @@ fn batched(vk: &rivi_loader::Vulkan, shader: &rivi_loader::Shader) -> u128 {
 
     (0..bound).map(|_| {
 
-        let mut output = vec![0.0f32; 1_146_024 * vk.threads()];
+        let specializations = Vec::new();
+        let shader = rivi_loader::load_shader(gpu, shader.clone(), specializations).unwrap();
 
-        let run_timer = Instant::now();
-        vk.compute(&input, &mut output, shader).unwrap();
-        let end_timer = run_timer.elapsed().as_millis();
+        let time = gpu.fences.as_ref().unwrap().par_iter().map(|fence| {
 
-        // to check the results below against precomputed answer
-        assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0*vk.threads() as f64);
+            let mut output = vec![0.0f32; 1_146_024];
+            let push_constants = vec![];
+            let mut schedule = Schedule {
+                output: &mut output, input: &input[0], shader: &shader, push_constants, fence
+            };
 
-        end_timer
+            let run_timer = Instant::now();
+            gpu.execute(&mut schedule).unwrap();
+            let end_timer = run_timer.elapsed().as_millis();
+
+            assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0 as f64);
+
+            end_timer
+        }).collect::<Vec<_>>();
+
+        time.iter().sum::<u128>() / 4
+
     }).sum()
-}
-
-fn at_once(vk: &rivi_loader::Vulkan, shader: &rivi_loader::Shader) -> u128 {
-
-    // replicate work among cores
-    let input = load_input(150);
-    let mut output = vec![0.0f32; 1_146_024 * 150];
-
-    let run_timer = Instant::now();
-    vk.compute(&input, &mut output, shader).unwrap();
-    let end_timer = run_timer.elapsed().as_millis();
-
-    // to check the results below against precomputed answer
-    assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0*150 as f64);
-
-    end_timer
 }
 
 fn csv(f: &str, v: &mut Vec<f32>) -> Result<(), Box<dyn Error>> {
