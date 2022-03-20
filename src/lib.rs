@@ -468,7 +468,7 @@ pub struct Compute {
 
 pub struct Schedule<'a, T> {
     pub output: &'a mut [T],
-    pub input: &'a [Vec<T>],
+    pub input: &'a mut [Vec<T>],
     pub shader: &'a Shader<'a>,
     pub push_constants: Vec<PushConstant>,
     pub fence: &'a Fence,
@@ -486,16 +486,12 @@ impl Compute {
         descriptor_set: vk::DescriptorSet,
         command_buffer: vk::CommandBuffer,
         shader: &Shader<'_>,
-        output: &Buffer,
-        input: &[Buffer],
+        buffers: Vec<vk::DescriptorBufferInfo>,
         push_constants: &[PushConstant],
     ) -> Result<(), vk::Result> {
 
-        let buffer_infos = (0..=input.len()).into_iter()
-            .map(|f| match f {
-                0 => [output.buffer_info],
-                _ => [input[f-1].buffer_info],
-            })
+        let buffer_infos = buffers.into_iter()
+            .map(|buf| [buf])
             .collect::<Vec<[vk::DescriptorBufferInfo; 1]>>();
 
         let wds = buffer_infos.iter().enumerate()
@@ -542,26 +538,38 @@ impl Compute {
             0,
             vk::WHOLE_SIZE,
         )?;
+        let mut output_info = vec![Buffer::buffer_info(output_buffer.buffer, 0, vk::WHOLE_SIZE)];
 
-        let input_buffers = schedule.input
-            .iter()
-            .map(|data| {
-                let buffer = Buffer::new(
-                    &format!("input {}", schedule.fence.phy_index),
-                    &self.device,
-                    &allocator,
-                    Buffer::buffer_create_info(
-                        (data.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
-                        vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-                        &[schedule.fence.phy_index as u32]
-                    ),
-                    gpu_allocator::MemoryLocation::CpuToGpu,
-                    0,
-                    vk::WHOLE_SIZE,
-                )?.fill(data)?;
-                Ok(buffer)
-            })
-            .collect::<Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>>>()?;
+        let mut offset_map = vec![];
+        schedule.input.iter().fold(0, |acc, data| {
+            offset_map.push(((acc * std::mem::size_of::<T>()) as vk::DeviceSize, (data.len() * std::mem::size_of::<T>()) as vk::DeviceSize));
+            acc + data.len()
+        });
+
+        let mut input_1d = vec![];
+        for data in schedule.input.iter_mut() {
+            input_1d.append(data)
+        }
+        let input_buffer = Buffer::new(
+            &format!("input {}", schedule.fence.phy_index),
+            &self.device,
+            &allocator,
+            Buffer::buffer_create_info(
+                (input_1d.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
+                &[schedule.fence.phy_index as u32]
+            ),
+            gpu_allocator::MemoryLocation::CpuToGpu,
+            0,
+            vk::WHOLE_SIZE,
+        )?.fill(&input_1d)?;
+
+        let mut input_buffers = offset_map
+            .into_iter()
+            .map(|tuple| Buffer::buffer_info(input_buffer.buffer, tuple.0, tuple.1))
+            .collect::<Vec<_>>();
+
+        output_info.append(&mut input_buffers);
 
         let command = Command::new(
             schedule.fence.phy_index as u32,
@@ -580,8 +588,7 @@ impl Compute {
                     *descriptor_set,
                     *command_buffer,
                     schedule.shader,
-                    &output_buffer,
-                    &input_buffers,
+                    output_info.clone(),
                     &schedule.push_constants,
                 )?;
                 // TODO: possible optimization here: group submits per queue -> map into intermediate result
