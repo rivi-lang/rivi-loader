@@ -157,7 +157,7 @@ impl Vulkan {
 
             })
             .collect::<Result<Vec<Compute>, Box<dyn Error>>>()?.into_iter()
-            .filter(|c| !c.fences.is_none())
+            .filter(|c| c.fences.is_some())
             .collect::<Vec<Compute>>())
     }
 
@@ -271,15 +271,6 @@ impl Vulkan {
         match &self.compute {
             Some(gpus) => Ok(gpus),
             None => Err("No compute capable devices".to_string().into()),
-        }
-    }
-
-    pub fn threads(
-        &self
-    ) -> usize {
-        match &self.compute {
-            Some(c) => c.iter().map(|d| d.fences.as_ref().unwrap().len()).sum::<usize>(),
-            None => 0,
         }
     }
 }

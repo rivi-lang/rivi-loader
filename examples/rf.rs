@@ -1,6 +1,6 @@
 use std::{error::Error, time::Instant};
 
-use rivi_loader::{DebugOption, Schedule, PushConstant};
+use rivi_loader::{DebugOption, Schedule};
 use rayon::prelude::*;
 
 /// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
@@ -20,9 +20,7 @@ fn main() {
 
     loop {
         let a = batched(&vk, &shader);
-        //let b = at_once(&vk, &shader);
         println!("Batched runtime: {}ms", a);
-        //println!("At once runtime: {}ms", b);
     }
 }
 
@@ -30,12 +28,13 @@ fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
 
     let gpus = vk.local_gpus().unwrap();
     let gpu = gpus.first().unwrap();
+    let threads = gpu.fences.as_ref().unwrap().len();
 
     // replicate work among cores
-    let input = load_input(vk.threads());
+    let dataset = load_input(threads);
 
     // create upper bound for iterations
-    let bound = (150.0 / vk.threads() as f32).ceil() as i32;
+    let bound = (150.0 / threads as f32).ceil() as i32;
 
     (0..bound).map(|_| {
 
@@ -54,7 +53,7 @@ fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
             gpu.execute(&mut schedule).unwrap();
             let end_timer = run_timer.elapsed().as_millis();
 
-            assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0 as f64);
+            assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0_f64);
 
             end_timer
         }).collect::<Vec<_>>();
