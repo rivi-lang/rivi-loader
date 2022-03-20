@@ -32,11 +32,11 @@ fn main() {
 
 ## Features
 
-- lifetime management of Vulkan resources
-- multi-gpu support
-- allows scheduling on multiple queue families
-- allows scheduling on multiple queues of a single queue family
-- allows shader specialization constants to be set
+- Rust lifetime management of Vulkan resources
+- scheduling on multiple gpus
+- scheduling on multiple queue families
+- supports shader specialization constants
+- supports push constants
 - supports per device querying of "advanced" compute capabilities, e.g., subgroup sizes
 - allows Rust generics to be used on input and output buffers
 
