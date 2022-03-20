@@ -46,7 +46,7 @@ fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
             let mut output = vec![0.0f32; 1_146_024];
             let push_constants = vec![];
             let mut schedule = Schedule {
-                output: &mut output, input: &input[0], shader: &shader, push_constants, fence
+                output: &mut output, input: &dataset[0], shader: &shader, push_constants, fence
             };
 
             let run_timer = Instant::now();

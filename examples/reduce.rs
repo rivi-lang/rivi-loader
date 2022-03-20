@@ -29,8 +29,12 @@ fn main() {
             let mut schedule = Schedule {
                 output: &mut output, input: &input, shader: &shader, push_constants, fence
             };
+
+            let run_timer = std::time::Instant::now();
             gpu.execute(&mut schedule).unwrap();
-            println!("  Core {}: {:?}", fence.phy_index, schedule.output[0]);
+            let end_timer = run_timer.elapsed().as_millis();
+
+            println!("  Core {}: {:?} {}", fence.phy_index, schedule.output[0], end_timer);
             schedule.output.iter().enumerate().for_each(|(index, val)| {
                 if *val != 0.0 {
                     println!("{} {}", index, val)
