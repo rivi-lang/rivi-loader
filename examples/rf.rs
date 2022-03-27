@@ -1,6 +1,6 @@
-use std::{error::Error, time::Instant};
+use std::error::Error;
 
-use rivi_loader::{DebugOption, Schedule};
+use rivi_loader::{DebugOption, Schedule, GroupCount, Task};
 use rayon::prelude::*;
 
 /// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
@@ -43,17 +43,38 @@ fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
 
         let time = gpu.fences.as_ref().unwrap().par_iter().map(|fence| {
 
-            let mut output = vec![0.0f32; 1_146_024];
-            let push_constants = vec![];
-            let mut schedule = Schedule {
-                output: &mut output, input: &dataset[0], shader: &shader, push_constants, fence
-            };
+            let tasks = fence.queues
+                .iter()
+                .map(|queue| {
 
-            let run_timer = Instant::now();
-            gpu.execute(&mut schedule).unwrap();
+                    let output = vec![0.0f32; 1_146_024];
+                    let push_constants = vec![];
+                    let group_count = GroupCount {
+                        x: 1024,
+                        ..Default::default()
+                    };
+
+                    Task {
+                        input: dataset[0].clone(),
+                        output,
+                        push_constants,
+                        queue: *queue,
+                        group_count,
+                    }
+
+                })
+                .collect::<Vec<_>>();
+
+            let mut schedule = Schedule { shader: &shader, fence, tasks };
+            let run_timer = std::time::Instant::now();
+            gpu.scheduled(&shader, fence, &mut schedule).unwrap();
             let end_timer = run_timer.elapsed().as_millis();
 
-            assert_eq!(output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0_f64);
+            schedule.tasks
+                .into_iter()
+                .for_each(|task| {
+                    assert_eq!(task.output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0_f64);
+                });
 
             end_timer
         }).collect::<Vec<_>>();

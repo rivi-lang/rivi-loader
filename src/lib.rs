@@ -4,6 +4,7 @@ use std::{error::Error, fmt, sync::RwLock};
 
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use num_traits::Bounded;
 use rspirv::binary::Assemble;
 
 const LAYER_VALIDATION: *const std::os::raw::c_char = concat!("VK_LAYER_KHRONOS_validation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
@@ -13,6 +14,9 @@ const EXT_VARIABLE_POINTERS: *const std::os::raw::c_char = concat!("VK_KHR_varia
 const EXT_GET_MEMORY_REQUIREMENTS2: *const std::os::raw::c_char = concat!("VK_KHR_get_memory_requirements2", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 const EXT_DEDICATED_ALLOCATION: *const std::os::raw::c_char = concat!("VK_KHR_dedicated_allocation", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
 const EXT_PORTABILITY_SUBSET: *const std::os::raw::c_char = concat!("VK_KHR_portability_subset", "\0") as *const str as *const [std::os::raw::c_char] as *const std::os::raw::c_char;
+
+const COMPUTE_BIT: ash::vk::QueueFlags = vk::QueueFlags::COMPUTE;
+const TRANSFER_BIT: ash::vk::QueueFlags = vk::QueueFlags::TRANSFER;
 
 pub fn new(
     debug: DebugOption
@@ -146,7 +150,7 @@ impl Vulkan {
             })
             .map(|pdevice| {
                 let device = Self::create_device(instance, pdevice)?;
-                let queue_infos = unsafe { Self::queue_infos(instance, pdevice) };
+                let queue_infos = unsafe { Self::queue_infos(instance, pdevice, COMPUTE_BIT | TRANSFER_BIT) };
                 let fences = Some(Self::create_fences(instance, pdevice, &device, queue_infos)?);
                 let memory = unsafe { instance.get_physical_device_memory_properties(pdevice) };
                 let (name, properties) = Self::device_name(instance, pdevice);
@@ -164,9 +168,10 @@ impl Vulkan {
     unsafe fn queue_infos(
         instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
+        bits: vk::QueueFlags,
     ) -> Vec<(usize, Vec<f32>)> {
         instance.get_physical_device_queue_family_properties(pdevice).iter().enumerate()
-            .filter(|(_, prop)| prop.queue_flags.contains(vk::QueueFlags::COMPUTE))
+            .filter(|(_, prop)| prop.queue_flags.contains(bits))
             .map(|(idx, prop)| (idx, vec![1.0_f32; prop.queue_count as usize]))
             .collect()
     }
@@ -190,7 +195,6 @@ impl Vulkan {
         instance: &ash::Instance,
         pdevice: vk::PhysicalDevice,
     ) -> vk::PhysicalDeviceSubgroupProperties {
-        // Retrieving Subgroup operations will segfault a Mac
         // https://www.khronos.org/blog/vulkan-subgroup-tutorial
         let mut sp = vk::PhysicalDeviceSubgroupProperties::builder();
         let mut dp2 = vk::PhysicalDeviceProperties2::builder().push_next(&mut sp).build();
@@ -247,8 +251,8 @@ impl Vulkan {
         }
 
         // See: https://github.com/MaikKlein/ash/issues/539
-        let priorities = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().map(|f| f.1).collect::<Vec<_>>();
-        let queue_create_infos = unsafe { Self::queue_infos(instance, pdevice) }.into_iter().enumerate().map(|(idx, (phy_index, _))| {
+        let priorities = unsafe { Self::queue_infos(instance, pdevice, COMPUTE_BIT | TRANSFER_BIT) }.into_iter().map(|f| f.1).collect::<Vec<_>>();
+        let queue_create_infos = unsafe { Self::queue_infos(instance, pdevice, COMPUTE_BIT | TRANSFER_BIT) }.into_iter().enumerate().map(|(idx, (phy_index, _))| {
             vk::DeviceQueueCreateInfo::builder()
                 .queue_family_index(phy_index as u32)
                 .queue_priorities(&priorities[idx])
@@ -466,29 +470,30 @@ pub struct Compute {
     device: ash::Device,
 }
 
-pub struct Schedule<'a, T> {
-    pub output: &'a mut [T],
-    pub input: &'a [Vec<T>],
+pub struct Schedule<'a, T: Bounded> {
     pub shader: &'a Shader<'a>,
-    pub push_constants: Vec<PushConstant>,
     pub fence: &'a Fence,
+    pub tasks: Vec<Task<T>>,
 }
 
-pub struct PushConstant {
-    pub offset: u32,
-    pub constants: Vec<u8>,
+pub struct Task<T: Bounded> {
+    pub input: Vec<Vec<T>>,
+    pub output: Vec<T>,
+    pub push_constants: Vec<PushConstant>,
+    pub queue: vk::Queue,
+    pub group_count: GroupCount,
 }
 
-impl Compute {
+impl<T: Bounded> Task<T> {
 
-    fn task(
+    fn dispatch(
         &self,
+        device: &ash::Device,
         descriptor_set: vk::DescriptorSet,
         command_buffer: vk::CommandBuffer,
         shader: &Shader<'_>,
         output: &Buffer,
         input: &[Buffer],
-        push_constants: &[PushConstant],
     ) -> Result<(), vk::Result> {
 
         let buffer_infos = (0..=input.len()).into_iter()
@@ -510,50 +515,97 @@ impl Compute {
             .collect::<Vec<vk::WriteDescriptorSet>>();
 
         unsafe {
-            self.device.update_descriptor_sets(&wds, &[]);
-            self.device.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
-            self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
-            self.device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[descriptor_set], &[]);
-            for push_constant in push_constants {
-                self.device.cmd_push_constants(command_buffer, shader.pipeline_layout, vk::ShaderStageFlags::COMPUTE, push_constant.offset, &push_constant.constants);
+            device.update_descriptor_sets(&wds, &[]);
+            device.begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline);
+            device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE, shader.pipeline_layout, 0, &[descriptor_set], &[]);
+            for push_constant in &self.push_constants {
+                device.cmd_push_constants(command_buffer, shader.pipeline_layout, vk::ShaderStageFlags::COMPUTE, push_constant.offset, &push_constant.constants);
             }
-            self.device.cmd_dispatch(command_buffer, 1024, 1, 1);
-            self.device.end_command_buffer(command_buffer)
+            device.cmd_dispatch(command_buffer, self.group_count.x, self.group_count.y, self.group_count.z);
+            device.end_command_buffer(command_buffer)
         }
     }
+}
 
-    pub fn execute<T: std::marker::Sync>(
+pub struct GroupCount {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+impl Default for GroupCount {
+    fn default() -> Self {
+        GroupCount { x: 1, y: 1, z: 1 }
+    }
+}
+
+pub struct PushConstant {
+    pub offset: u32,
+    pub constants: Vec<u8>,
+}
+
+impl Compute {
+
+    pub fn scheduled<T: Bounded>(
         &self,
+        shader: &Shader,
+        fence: &Fence,
         schedule: &mut Schedule<T>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
-        let allocator = schedule.fence.allocator.as_ref().unwrap();
+        let allocator = fence.allocator.as_ref().unwrap();
+        let command = Command::new(
+            fence.phy_index as u32,
+            shader.binding_count,
+            &shader.set_layouts,
+            schedule.tasks.len() as u32,
+            &self.device,
+        )?;
+        let descriptor_set = command.descriptor_sets.first().unwrap().to_owned();
+
+        schedule.tasks.iter_mut()
+            .zip(command.command_buffers.iter())
+            .try_for_each(|(task, command_buffer)| {
+                self.execute(&descriptor_set, command_buffer, allocator, shader, fence, task)
+            })
+    }
+
+    fn execute<T: Bounded>(
+        &self,
+        descriptor_set: &vk::DescriptorSet,
+        command_buffer: &vk::CommandBuffer,
+        allocator: &RwLock<Allocator>,
+        shader: &Shader,
+        fence: &Fence,
+        task: &mut Task<T>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
         let output_buffer = Buffer::new(
-            &format!("output {}", schedule.fence.phy_index),
+            &format!("output {}", fence.phy_index),
             &self.device,
             &allocator,
             Buffer::buffer_create_info(
-                (schedule.output.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
+                (task.output.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-                &[schedule.fence.phy_index as u32]
+                &[fence.phy_index as u32]
             ),
             gpu_allocator::MemoryLocation::GpuToCpu,
             0,
             vk::WHOLE_SIZE,
         )?;
 
-        let input_buffers = schedule.input
+        let input_buffers = task.input
             .iter()
             .map(|data| {
                 let buffer = Buffer::new(
-                    &format!("input {}", schedule.fence.phy_index),
+                    &format!("input {}", fence.phy_index),
                     &self.device,
                     &allocator,
                     Buffer::buffer_create_info(
                         (data.len() * std::mem::size_of::<T>()) as vk::DeviceSize,
                         vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::STORAGE_BUFFER,
-                        &[schedule.fence.phy_index as u32]
+                        &[fence.phy_index as u32]
                     ),
                     gpu_allocator::MemoryLocation::CpuToGpu,
                     0,
@@ -563,40 +615,27 @@ impl Compute {
             })
             .collect::<Result<Vec<Buffer<'_, '_>>, Box<dyn Error + Send + Sync>>>()?;
 
-        let command = Command::new(
-            schedule.fence.phy_index as u32,
-            schedule.shader.binding_count,
-            &schedule.shader.set_layouts,
-            schedule.input.len() as u32,
+        task.dispatch(
             &self.device,
+            *descriptor_set,
+            *command_buffer,
+            shader,
+            &output_buffer,
+            &input_buffers
         )?;
 
-        command.descriptor_sets.iter()
-            .zip(command.command_buffers.iter())
-            .zip(schedule.fence.queues.iter())
-            .try_for_each(|((descriptor_set, command_buffer), _)| {
-                let queue = schedule.fence.queues.first().unwrap();
-                self.task(
-                    *descriptor_set,
-                    *command_buffer,
-                    schedule.shader,
-                    &output_buffer,
-                    &input_buffers,
-                    &schedule.push_constants,
-                )?;
-                // TODO: possible optimization here: group submits per queue -> map into intermediate result
-                // useful if multiple queues are used
-                let submits = [vk::SubmitInfo::builder().command_buffers(&[*command_buffer]).build()];
-                unsafe { self.device.queue_submit(*queue, &submits, schedule.fence.vk_fence) }
-            })
-            .and_then(|_| unsafe {
-                self.device.wait_for_fences(&[schedule.fence.vk_fence], true, u64::MAX)?;
-                self.device.reset_fences(&[schedule.fence.vk_fence])?;
-                Ok(())
-            })?;
+        // TODO: possible optimization here: group submits per queue -> map into intermediate result
+        // useful if multiple queues are used
+        let submits = [vk::SubmitInfo::builder().command_buffers(&[*command_buffer]).build()];
+        unsafe { self.device.queue_submit(task.queue, &submits, fence.vk_fence)? };
+
+        unsafe {
+            self.device.wait_for_fences(&[fence.vk_fence], true, u64::MAX)?;
+            self.device.reset_fences(&[fence.vk_fence])?;
+        }
 
         let data_ptr = output_buffer.c_ptr.as_ptr().cast::<T>();
-        unsafe { data_ptr.copy_to_nonoverlapping(schedule.output.as_mut_ptr(), schedule.output.len()) };
+        unsafe { data_ptr.copy_to_nonoverlapping(task.output.as_mut_ptr(), task.output.len()) };
 
         Ok(())
     }
@@ -673,9 +712,7 @@ impl <'a> Command<'_> {
             .descriptor_pool(descriptor_pool)
             .set_layouts(set_layouts);
 
-        let descriptor_sets = (0..command_buffer_count).into_iter().flat_map(|_| {
-            unsafe { device.allocate_descriptor_sets(&descriptor_set_info) }.map(|sets| sets[0])
-        }).collect();
+        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&descriptor_set_info)? };
 
         let command_pool = Command::command_pool(device, queue_family_index)?;
         let command_buffers = Command::allocate_command_buffers(device, command_pool, command_buffer_count)?;
