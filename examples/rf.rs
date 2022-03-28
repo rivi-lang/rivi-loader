@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use rivi_loader::{DebugOption, Schedule, GroupCount, Task};
+use rivi_loader::{DebugOption, GroupCount, Task};
 use rayon::prelude::*;
 
 /// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
@@ -19,19 +19,17 @@ fn main() {
     let shader = rspirv::dr::load_bytes(binary).unwrap();
 
     loop {
-        let a = batched(&vk, &shader);
-        println!("Batched runtime: {}ms", a);
+        println!("Batched runtime: {}ms", batched(&vk, &shader));
     }
 }
 
 fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
 
-    let gpus = vk.local_gpus().unwrap();
-    let gpu = gpus.first().unwrap();
+    let gpu = vk.local_gpus().unwrap().first().unwrap();
     let threads = gpu.fences.as_ref().unwrap().len();
 
     // replicate work among cores
-    let dataset = load_input(threads);
+    let dataset = load_input(150);
 
     // create upper bound for iterations
     let bound = (150.0 / threads as f32).ceil() as i32;
@@ -43,43 +41,30 @@ fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
 
         let time = gpu.fences.as_ref().unwrap().par_iter().map(|fence| {
 
-            let tasks = fence.queues
-                .iter()
-                .map(|queue| {
-
-                    let output = vec![0.0f32; 1_146_024];
-                    let push_constants = vec![];
-                    let group_count = GroupCount {
+            let mut tasks = fence.queues.iter().map(|queue| {
+                Task {
+                    input: dataset[bound as usize].clone(),
+                    output: vec![0.0f32; 1_146_024],
+                    push_constants: vec![],
+                    queue: *queue,
+                    group_count: GroupCount {
                         x: 1024,
                         ..Default::default()
-                    };
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
 
-                    Task {
-                        input: dataset[0].clone(),
-                        output,
-                        push_constants,
-                        queue: *queue,
-                        group_count,
-                    }
-
-                })
-                .collect::<Vec<_>>();
-
-            let mut schedule = Schedule { shader: &shader, fence, tasks };
             let run_timer = std::time::Instant::now();
-            gpu.scheduled(&shader, fence, &mut schedule).unwrap();
+            gpu.scheduled(&shader, fence, &mut tasks).unwrap();
             let end_timer = run_timer.elapsed().as_millis();
 
-            schedule.tasks
-                .into_iter()
-                .for_each(|task| {
-                    assert_eq!(task.output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0_f64);
-                });
+            tasks.into_iter().for_each(|t| assert_eq!(t.output.into_iter().map(|f| f as f64).sum::<f64>(), 490058.0_f64));
 
             end_timer
         }).collect::<Vec<_>>();
 
-        time.iter().sum::<u128>() / 4
+        time.iter().sum::<u128>() / gpu.fences.as_ref().unwrap().len() as u128
 
     }).sum()
 }

@@ -258,6 +258,7 @@
         ; then, we store this value to our dim.x location
         %sum_dest = OpAccessChain %_ptr_Uniform_vec4 %out %uint_0 %inner_53
         OpStore %sum_dest %leader_val
+        OpControlBarrier %uint_1 %uint_1 %UniformMemory
 
         OpReturnValue %sum
     OpFunctionEnd
@@ -294,6 +295,7 @@
         ; then, we store this value to our dim.x location
         %sum_dest_scalar = OpAccessChain %_ptr_Uniform_float %out %uint_0 %array_idx_inner %vec_idx_inner
         OpStore %sum_dest_scalar %leader_val_scalar
+        OpControlBarrier %uint_1 %uint_1 %UniformMemory
 
         OpReturnValue %sum_scalar
     OpFunctionEnd

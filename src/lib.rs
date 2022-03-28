@@ -156,9 +156,7 @@ impl Vulkan {
                 let (name, properties) = Self::device_name(instance, pdevice);
                 let subgroup_properties = Self::subgroup_properties(instance, pdevice);
                 let subgroup_size = subgroup_properties.subgroup_size as usize;
-
                 Ok(Compute { device, fences, memory, name, subgroup_size, supported_operations: subgroup_properties.supported_operations, properties})
-
             })
             .collect::<Result<Vec<Compute>, Box<dyn Error>>>()?.into_iter()
             .filter(|c| c.fences.is_some())
@@ -302,9 +300,7 @@ impl fmt::Display for Vulkan {
             let mem_str = gpu.memory.memory_heaps.iter()
                 .filter(|mh| mh.size.ne(&0))
                 .enumerate()
-                .map(|(idx, mh)| {
-                    format!("{} {}", idx, mh.size / 1_073_741_824)
-                })
+                .map(|(idx, mh)| format!("{} {}", idx, mh.size / 1_073_741_824))
                 .collect::<Vec<String>>();
             let memory_heaps = format!("memory_heaps: {:?}", mem_str);
 
@@ -470,12 +466,6 @@ pub struct Compute {
     device: ash::Device,
 }
 
-pub struct Schedule<'a, T: Bounded> {
-    pub shader: &'a Shader<'a>,
-    pub fence: &'a Fence,
-    pub tasks: Vec<Task<T>>,
-}
-
 pub struct Task<T: Bounded> {
     pub input: Vec<Vec<T>>,
     pub output: Vec<T>,
@@ -551,7 +541,7 @@ impl Compute {
         &self,
         shader: &Shader,
         fence: &Fence,
-        schedule: &mut Schedule<T>,
+        tasks: &mut [Task<T>],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
         let allocator = fence.allocator.as_ref().unwrap();
@@ -559,12 +549,12 @@ impl Compute {
             fence.phy_index as u32,
             shader.binding_count,
             &shader.set_layouts,
-            schedule.tasks.len() as u32,
+            tasks.len() as u32,
             &self.device,
         )?;
         let descriptor_set = command.descriptor_sets.first().unwrap().to_owned();
 
-        schedule.tasks.iter_mut()
+        tasks.iter_mut()
             .zip(command.command_buffers.iter())
             .try_for_each(|(task, command_buffer)| {
                 self.execute(&descriptor_set, command_buffer, allocator, shader, fence, task)
@@ -705,18 +695,13 @@ impl <'a> Command<'_> {
         command_buffer_count: u32,
         device: &'a ash::Device,
     ) -> Result<Command<'a>, Box<dyn Error + Send + Sync>> {
-
         let descriptor_pool = Command::descriptor_pool(device, descriptor_count, command_buffer_count)?;
-
         let descriptor_set_info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(descriptor_pool)
             .set_layouts(set_layouts);
-
         let descriptor_sets = unsafe { device.allocate_descriptor_sets(&descriptor_set_info)? };
-
         let command_pool = Command::command_pool(device, queue_family_index)?;
         let command_buffers = Command::allocate_command_buffers(device, command_pool, command_buffer_count)?;
-
         Ok(Command { descriptor_pool, command_pool, command_buffers, descriptor_sets, device })
     }
 }
