@@ -18,13 +18,6 @@ const EXT_PORTABILITY_SUBSET: *const std::os::raw::c_char = concat!("VK_KHR_port
 const COMPUTE_BIT: ash::vk::QueueFlags = vk::QueueFlags::COMPUTE;
 const TRANSFER_BIT: ash::vk::QueueFlags = vk::QueueFlags::TRANSFER;
 
-pub fn new(
-    debug: DebugOption
-) -> Result<Vulkan, Box<dyn Error>> {
-    let vk = Vulkan::new(debug)?;
-    Ok(vk)
-}
-
 pub struct Specialization {
     constant_id: u32,
     offset: u32,
@@ -58,15 +51,15 @@ pub fn load_shader(
 }
 
 pub struct Vulkan {
-    entry: ash::Entry, // Needs to outlive Instance and Devices.
+    _entry: ash::Entry, // Needs to outlive Instance and Devices.
     instance: ash::Instance, // Needs to outlive Devices.
     debug_layer: Option<DebugLayer>,
-    compute: Option<Vec<Compute>>,
+    pub compute: Option<Vec<Compute>>,
 }
 
 impl Vulkan {
 
-    fn new(
+    pub fn new(
         debug: DebugOption
     ) -> Result<Self, Box<dyn Error>> {
 
@@ -95,14 +88,13 @@ impl Vulkan {
             }
         };
 
-        let entry = unsafe { ash::Entry::load()? };
+        let _entry = unsafe { ash::Entry::load()? };
 
         let instance = unsafe {
-            entry.create_instance(&vk::InstanceCreateInfo::builder()
+            _entry.create_instance(&vk::InstanceCreateInfo::builder()
                 .push_next(&mut info)
                 .application_info(&vk::ApplicationInfo {
                     api_version: vk::make_api_version(0, 1, 2, 0),
-                    engine_version: 0,
                     ..Default::default()
                 })
                 .enabled_layer_names(&vk_layers)
@@ -113,7 +105,7 @@ impl Vulkan {
         let debug_layer = match debug {
             DebugOption::None => None,
             _ => {
-                let loader = ash::extensions::ext::DebugUtils::new(&entry, &instance);
+                let loader = ash::extensions::ext::DebugUtils::new(&_entry, &instance);
                 let messenger = unsafe { loader.create_debug_utils_messenger(&info, None)? };
                 Some(DebugLayer{loader, messenger})
             },
@@ -125,16 +117,7 @@ impl Vulkan {
             false => Some(computes),
         };
 
-        Ok(Self{entry, instance, debug_layer, compute})
-    }
-
-    pub fn version(
-        &self
-    ) -> Result<(u32, u32, u32), Box<dyn Error>>  {
-        match self.entry.try_enumerate_instance_version()? {
-            Some(v) => Ok((vk::api_version_major(v), vk::api_version_minor(v), vk::api_version_patch(v))),
-            None => Ok((vk::api_version_major(1), vk::api_version_minor(0), vk::api_version_patch(0))),
-        }
+        Ok(Self{_entry, instance, debug_layer, compute})
     }
 
     fn logical_devices(
@@ -265,15 +248,6 @@ impl Vulkan {
             .push_next(&mut variable_pointers);
 
         unsafe { instance.create_device(pdevice, &device_info, None) }
-    }
-
-    pub fn local_gpus(
-        &self
-    ) -> Result<&[Compute], Box<dyn Error>> {
-        match &self.compute {
-            Some(gpus) => Ok(gpus),
-            None => Err("No compute capable devices".to_string().into()),
-        }
     }
 }
 
@@ -408,8 +382,7 @@ impl <'a> Shader<'_> {
             &vk::PipelineLayoutCreateInfo::builder()
                 .set_layouts(&set_layouts)
                 .push_constant_ranges(&[push_constant_ranges]),
-            None)?
-        };
+            None)? };
 
         let binary = module.assemble();
         let module = unsafe { device.create_shader_module(&vk::ShaderModuleCreateInfo::builder().code(&binary), None)? };

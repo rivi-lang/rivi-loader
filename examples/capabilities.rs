@@ -1,6 +1,6 @@
-use rivi_loader::DebugOption;
+use rivi_loader::{DebugOption, Vulkan};
 
 fn main() {
-    let vk = rivi_loader::new(DebugOption::None).unwrap();
+    let vk = Vulkan::new(DebugOption::None).unwrap();
     println!("{}", vk);
 }

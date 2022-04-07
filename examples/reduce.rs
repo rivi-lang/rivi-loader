@@ -1,9 +1,9 @@
-use rivi_loader::{DebugOption, PushConstant, Task, GroupCount};
+use rivi_loader::{DebugOption, PushConstant, Task, GroupCount, Vulkan};
 
 fn main() {
 
-    let vk = rivi_loader::new(DebugOption::None).unwrap();
-    let gpus = vk.local_gpus().unwrap();
+    let vk = Vulkan::new(DebugOption::None).unwrap();
+    let gpus = vk.compute.as_ref().unwrap();
 
     loop {
 

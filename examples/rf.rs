@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use rivi_loader::{DebugOption, GroupCount, Task};
+use rivi_loader::{DebugOption, GroupCount, Task, Vulkan};
 use rayon::prelude::*;
 
 /// `rf.rs` runs Python Scikit derived random forest prediction algorithm.
@@ -13,7 +13,7 @@ use rayon::prelude::*;
 /// The whole ordeal is further elaborated here: https://hal.inria.fr/hal-03155647/
 fn main() {
     // initialize vulkan process
-    let vk = rivi_loader::new(DebugOption::None).unwrap();
+    let vk = Vulkan::new(DebugOption::None).unwrap();
     // bind shader to a compute device
     let binary = &include_bytes!("./rf/shader/apply.spv")[..];
     let shader = rspirv::dr::load_bytes(binary).unwrap();
@@ -25,7 +25,7 @@ fn main() {
 
 fn batched(vk: &rivi_loader::Vulkan, shader: &rspirv::dr::Module) -> u128 {
 
-    let gpu = vk.local_gpus().unwrap().first().unwrap();
+    let gpu = vk.compute.as_ref().unwrap().first().unwrap();
     let threads = gpu.fences.as_ref().unwrap().len();
 
     // replicate work among cores
