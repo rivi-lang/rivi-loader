@@ -267,10 +267,6 @@
     %63_scalar = OpFunctionParameter %_ptr_Uniform_float
     %apply_label_scalar = OpLabel
 
-        %sgs_scalar = OpLoad %1 %SubgroupSize
-        %sgi_scalar = OpLoad %1 %SubgroupID
-        %sgli_scalar = OpLoad %1 %SubgroupLocalID
-
         ; invocation id ptr, "thread" id
         %inner_52_scalar = OpAccessChain %wg %invocation_id %uint_0
         %inner_53_scalar = OpLoad %1 %inner_52_scalar
@@ -289,12 +285,7 @@
         %leader_val_scalar = OpFMul %float %sum_scalar %leader_float_scalar ; then multiple subgroup result with the assign
         ; effectively, if we are subgroup leader, we "keep" our value, otherwise we clear it as 0
 
-        %vec_idx_inner = OpUMod %1 %inner_53_scalar %uint_4
-        %array_idx_inner = OpUDiv %1 %inner_53_scalar %uint_4
-
-        ; then, we store this value to our dim.x location
-        %sum_dest_scalar = OpAccessChain %_ptr_Uniform_float %out %uint_0 %array_idx_inner %vec_idx_inner
-        OpStore %sum_dest_scalar %leader_val_scalar
+        OpStore %63_scalar %leader_val_scalar
         OpControlBarrier %uint_1 %uint_1 %UniformMemory
 
         OpReturnValue %sum_scalar
