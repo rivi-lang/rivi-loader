@@ -3,7 +3,7 @@ mod lib_test;
 use std::{error::Error, fmt, sync::RwLock};
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator, AllocatorCreateDesc};
+use gpu_allocator::vulkan::*;
 use num_traits::Bounded;
 use rspirv::binary::Assemble;
 
@@ -715,6 +715,7 @@ impl <'a, 'b> Buffer<'_, '_> {
             requirements,
             location,
             linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
         })?;
         let c_ptr = allocation.mapped_ptr().unwrap();
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())? };
