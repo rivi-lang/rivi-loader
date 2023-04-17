@@ -19,6 +19,9 @@
             rustc
             cargo
 
+            spirv-tools
+            spirv-cross
+
             (pkgs.darwin.apple_sdk_11_0.callPackage <nixpkgs/pkgs/os-specific/darwin/moltenvk> {
               inherit (pkgs.darwin.apple_sdk_11_0.frameworks) AppKit Foundation Metal QuartzCore;
               inherit (pkgs.darwin.apple_sdk_11_0) MacOSX-SDK Libsystem;
