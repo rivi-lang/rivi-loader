@@ -22,7 +22,7 @@
             spirv-tools
             spirv-cross
 
-            (pkgs.darwin.apple_sdk_11_0.callPackage <nixpkgs/pkgs/os-specific/darwin/moltenvk> {
+            (pkgs.darwin.apple_sdk_11_0.callPackage "${toString self.inputs.nixpkgs}/pkgs/os-specific/darwin/moltenvk" {
               inherit (pkgs.darwin.apple_sdk_11_0.frameworks) AppKit Foundation Metal QuartzCore;
               inherit (pkgs.darwin.apple_sdk_11_0) MacOSX-SDK Libsystem;
               inherit (pkgs.darwin) cctools sigtool;
