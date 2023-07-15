@@ -104,7 +104,11 @@ impl Vulkan {
             },
         };
 
-        let _entry = unsafe { ash::Entry::load()? };
+        let _entry: ash::Entry = if cfg!(target_os = "macos") {
+            unsafe { ash::Entry::load()? }
+        } else {
+            ash::Entry::linked()
+        };
 
         let instance = unsafe {
             _entry.create_instance(

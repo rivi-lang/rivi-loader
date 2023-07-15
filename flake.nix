@@ -8,7 +8,16 @@
       let
         naersk' = pkgs.callPackage naersk { };
         pkgs = import nixpkgs { inherit system; };
-        nativeBuildInputs = with pkgs; [ pkgconfig vulkan-loader ];
+        nativeBuildInputs = with pkgs; [
+          pkgconfig
+          vulkan-loader
+        ] ++ lib.optionals stdenv.hostPlatform.isDarwin [
+          (pkgs.darwin.apple_sdk_11_0.callPackage "${toString self.inputs.nixpkgs}/pkgs/os-specific/darwin/moltenvk" {
+            inherit (pkgs.darwin.apple_sdk_11_0.frameworks) AppKit Foundation Metal QuartzCore;
+            inherit (pkgs.darwin.apple_sdk_11_0) MacOSX-SDK Libsystem;
+            inherit (pkgs.darwin) cctools sigtool;
+          })
+        ];
       in
       {
         devShells.default = pkgs.mkShell {
@@ -19,12 +28,6 @@
 
             spirv-tools
             spirv-cross
-
-            (pkgs.darwin.apple_sdk_11_0.callPackage "${toString self.inputs.nixpkgs}/pkgs/os-specific/darwin/moltenvk" {
-              inherit (pkgs.darwin.apple_sdk_11_0.frameworks) AppKit Foundation Metal QuartzCore;
-              inherit (pkgs.darwin.apple_sdk_11_0) MacOSX-SDK Libsystem;
-              inherit (pkgs.darwin) cctools sigtool;
-            })
           ];
         };
         defaultPackage = naersk'.buildPackage {
@@ -34,6 +37,7 @@
           version = "0.1.0";
           src = ./.;
 
+          LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib";
           overrideMain = old: {
             preConfigure = ''
               cargo_build_options="$cargo_build_options --example capabilities"
