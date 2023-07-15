@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/23.05";
     naersk.url = "github:nix-community/naersk";
   };
   outputs = { self, nixpkgs, flake-utils, naersk, ... }:
