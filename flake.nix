@@ -1,20 +1,18 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    naersk.url = "github:nix-community/naersk";
   };
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
+  outputs = { self, nixpkgs, flake-utils, naersk, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs { inherit system overlays; };
-        rustVersion = pkgs.rust-bin.stable.latest.default;
+        naersk' = pkgs.callPackage naersk { };
+        pkgs = import nixpkgs { inherit system; };
+        nativeBuildInputs = with pkgs; [ pkgconfig vulkan-loader ];
       in
       {
         devShells.default = pkgs.mkShell {
-          buildInputs = [
-            (rustVersion.override { extensions = [ "rust-src" ]; })
-          ];
+          inherit nativeBuildInputs;
           packages = with pkgs; [
             rustc
             cargo
@@ -28,6 +26,19 @@
               inherit (pkgs.darwin) cctools sigtool;
             })
           ];
+        };
+        defaultPackage = naersk'.buildPackage {
+          inherit nativeBuildInputs;
+
+          pname = "capabilities";
+          version = "0.1.0";
+          src = ./.;
+
+          overrideMain = old: {
+            preConfigure = ''
+              cargo_build_options="$cargo_build_options --example capabilities"
+            '';
+          };
         };
       });
 }
