@@ -11,7 +11,12 @@ readme = "README.md"
 keywords = ["gpgpu", "vulkan", "spirv", "spir-v"]
 categories = ["accessibility", "concurrency", "game-development", "hardware-support", "science"]
 exclude = [
+    ".github",
     "examples",
+    ".envrc",
+    ".gitignore",
+    "flake.lock",
+    "flake.nix",
 ]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

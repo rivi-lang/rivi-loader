@@ -246,7 +246,6 @@ impl Vulkan {
                 let vk_fence =
                     unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
                 let queues = (0..queue_priorities.len())
-                    .into_iter()
                     .map(|queue_index| unsafe {
                         device.get_device_queue(phy_index as u32, queue_index as u32)
                     })
@@ -424,7 +423,6 @@ impl<'a> Shader<'_> {
 
     fn descriptor_set_layout_bindings(binding_count: usize) -> Vec<vk::DescriptorSetLayoutBinding> {
         (0..binding_count)
-            .into_iter()
             .map(|i| {
                 vk::DescriptorSetLayoutBinding::builder()
                     .binding(i as u32)
@@ -562,7 +560,6 @@ impl<T: Bounded> Task<T> {
         input: &[Buffer],
     ) -> Result<(), vk::Result> {
         let buffer_infos = (0..=input.len())
-            .into_iter()
             .map(|f| match f {
                 0 => [output.buffer_info],
                 _ => [input[f - 1].buffer_info],
