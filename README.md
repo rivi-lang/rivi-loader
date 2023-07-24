@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-rivi-loader = "0.1.5"
+rivi-loader = "0.2.0"
 ```
 
 rivi-loader is a Vulkan-based program loader for GPGPU applications. Roughly speaking, if you have input(s) and an output it will run a SPIR-V kernel on those values. This way, the long days of wondering how Vulkan works can be forgotten / skipped. That being said, the library does not help you in writing SPIR-V or any other shading language. It neither helps you in scheduling. What it does do is help you to setup the Vulkan instance, attach debug layers on it, query compute capable logical devices, expose fences and compute-capable queue families and queues, manage memory and command buffers, and deal with shader creation with specialization constant support. There is also a keen interest in making sure that the command buffers can be queued and polled in parallel on the CPU side.
