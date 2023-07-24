@@ -12,6 +12,7 @@
           pkgconfig
           vulkan-loader
         ] ++ lib.optionals stdenv.hostPlatform.isDarwin [
+          libiconv
           (pkgs.darwin.apple_sdk_11_0.callPackage "${toString self.inputs.nixpkgs}/pkgs/os-specific/darwin/moltenvk" {
             inherit (pkgs.darwin.apple_sdk_11_0.frameworks) AppKit Foundation Metal QuartzCore;
             inherit (pkgs.darwin.apple_sdk_11_0) MacOSX-SDK Libsystem;
@@ -30,18 +31,20 @@
             spirv-cross
           ];
         };
-        defaultPackage = naersk'.buildPackage {
-          inherit nativeBuildInputs;
+        packages = rec {
+          default = capabilities;
+          capabilities = naersk'.buildPackage {
+            inherit nativeBuildInputs;
 
-          pname = "capabilities";
-          version = "0.1.0";
-          src = ./.;
+            pname = "capabilities";
+            src = ./.;
 
-          LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib";
-          overrideMain = old: {
-            preConfigure = ''
-              cargo_build_options="$cargo_build_options --example capabilities"
-            '';
+            LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib";
+            overrideMain = old: {
+              preConfigure = ''
+                cargo_build_options="$cargo_build_options --example capabilities"
+              '';
+            };
           };
         };
       });
