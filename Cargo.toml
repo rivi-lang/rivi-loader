@@ -1,8 +1,8 @@
 [package]
 name = "rivi-loader"
-version = "0.1.5"
+version = "0.2.0"
 authors = ["Juuso Haavisto <juuso@mail.com>"]
-edition = "2018"
+edition = "2021"
 license = "GPL-3.0"
 description = "Vulkan compute loader"
 homepage = "https://github.com/periferia-labs/rivi-loader"
@@ -11,16 +11,22 @@ readme = "README.md"
 keywords = ["gpgpu", "vulkan", "spirv", "spir-v"]
 categories = ["accessibility", "concurrency", "game-development", "hardware-support", "science"]
 exclude = [
+    ".github",
     "examples",
+    ".envrc",
+    ".gitignore",
+    "flake.lock",
+    "flake.nix",
 ]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ash = "0.36.0"
-gpu-allocator = "0.17.0"
+ash = { version = "0.37.1", features = ["linked", "debug"]}
+gpu-allocator = "0.22.0"
 rspirv = "0.11.0"
-rayon = "1.5.1"
+num-traits = "0.2"
 
 [dev-dependencies]
-csv = "1.1.6"
+csv = "1.2.1"
+rayon = "1.7.0"
